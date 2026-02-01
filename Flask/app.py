@@ -168,6 +168,77 @@ def get_promotions():
     finally:
         conn.close()
 
+# ✅ 3. 테마 2: 내 주변 나들이 장소 API (거리순 정렬 + 페이징)
+@app.route('/api/spots/nearby', methods=['GET'])
+def get_nearby_spots():
+    lat = request.args.get('lat')   # 사용자 현재 위도
+    lng = request.args.get('lng')   # 사용자 현재 경도
+    radius = request.args.get('radius', 20) # 검색 반경 (기본 20km)
+    category = request.args.get('category') # 12, 14, 15 등 필터
+    limit = int(request.args.get('limit', 20))
+    offset = int(request.args.get('offset', 0))
+
+    if not lat or not lng:
+        return jsonify({"error": "위치 정보(lat, lng)가 필요합니다."}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 하버사인(Haversine) 공식을 이용한 MySQL 거리 계산 쿼리
+            # 6371은 지구의 반지름(km)입니다.
+            sql = """
+                SELECT *, (
+                    6371 * acos(
+                        cos(radians(%s)) * cos(radians(mapy)) 
+                        * cos(radians(mapx) - radians(%s)) 
+                        + sin(radians(%s)) * sin(radians(mapy))
+                    )
+                ) AS distance 
+                FROM picnic_spots
+            """
+            params = [lat, lng, lat]
+
+            # 필터 조건 추가
+            where_clauses = []
+            if category:
+                where_clauses.append("contenttypeid = %s")
+                params.append(category)
+            
+            if where_clauses:
+                sql += " WHERE " + " AND ".join(where_clauses)
+
+            # 반경 제한 및 정렬
+            sql += " HAVING distance <= %s ORDER BY distance ASC LIMIT %s OFFSET %s"
+            params.extend([float(radius), limit, offset])
+
+            cursor.execute(sql, params)
+            results = cursor.fetchall()
+            
+            return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ✅ 4. 장소 상세 정보 API (contentid 기반)
+@app.route('/api/spots/<contentid>', methods=['GET'])
+def get_spot_detail(contentid):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = "SELECT * FROM picnic_spots WHERE contentid = %s"
+            cursor.execute(sql, (contentid,))
+            result = cursor.fetchone()
+            
+            if not result:
+                return jsonify({"error": "해당 장소를 찾을 수 없습니다."}), 404
+                
+            return jsonify(result)
+    finally:
+        conn.close()
+
+
+
 # ✅ 헬스 체크용 API: 로드 밸런서 상태 확인용
 @app.route('/health', methods=['GET'])
 def health_check():
