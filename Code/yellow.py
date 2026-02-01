@@ -58,7 +58,7 @@ def run_collection():
 
                 parent_code = p_doc.get("goodsCd")
                 parent_title = p_doc.get("goodsNm")
-                
+                main_img_url = p_doc.get("imageThum3", "")
                 location = parent_title.split(' ')[0].replace('#', '') if ' ' in parent_title else "국내"
                 # ✅ [추가] 태그 추출 (부모/자식 공통 사용)
                 tags = extract_all_keywords(parent_title)
@@ -66,11 +66,17 @@ def run_collection():
 
                 # 💾 1) 부모 DB 저장 (tours) - category 대신 tags 기반으로 업데이트 가능
                 cursor.execute("""
-                    INSERT INTO tours (product_code, reference_code, title, description, location, collected_at, agency, category, phone)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE title=%s, description=%s, location=%s, category=%s, collected_at=%s
-                """, (parent_code, parent_code, parent_title, description, location, start_time, AGENCY_NAME, tags, YB_PHONE,
-                      parent_title, description, location, tags, start_time))
+                    INSERT INTO tours (product_code, reference_code, title, description, main_image_url, location, collected_at, agency, category, phone, is_priority)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                    ON DUPLICATE KEY UPDATE 
+                        title=%s, description=%s, main_image_url=%s, location=%s, category=%s, collected_at=%s
+                """, (
+                    # INSERT용 데이터 10개
+                    parent_code, parent_code, parent_title, description, main_img_url, 
+                    location, start_time, AGENCY_NAME, tags, YB_PHONE,
+                    # UPDATE용 데이터 6개
+                    parent_title, description, main_img_url, location, tags, start_time
+                ))
                 stats["total_rprs"] += 1
                 
                 logging.info(f"📦 [{stats['total_rprs']}] {parent_title[:20]}...")

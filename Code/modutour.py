@@ -139,6 +139,8 @@ def run_collection():
             for p in products:
                 master_code = p.get('masterCode')
                 master_title = p.get('masterProductName')
+                master_desc = p.get('descriptions') or master_title 
+                master_img = p.get('image', '')
                 asis_code = p.get('productCodes', [{}])[0].get('asisProductNo')
                 if not asis_code: continue
 
@@ -156,12 +158,17 @@ def run_collection():
 
                 # 2. 부모 정보 저장
                 cursor.execute("""
-                    INSERT INTO tours (product_code, reference_code, title, description, location, collected_at, agency, category, phone, is_priority)
-                    VALUES (%s, %s, %s, %s, %s, NOW(), %s, %s, %s, 0)
+                    INSERT INTO tours (product_code, reference_code, title, description, main_image_url, location, collected_at, agency, category, phone, is_priority)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s, 0)
                     ON DUPLICATE KEY UPDATE 
-                        reference_code=%s, title=%s, location=%s, category=%s, collected_at=NOW()
-                """, (master_code, asis_code, master_title, master_title, location, AGENCY_NAME, tags, MODE_PHONE, 
-                      asis_code, master_title, location, tags))
+                        title=%s, description=%s, main_image_url=%s, location=%s, category=%s, collected_at=NOW()
+                """, (
+                    # INSERT (10개)
+                    master_code, asis_code, master_title, master_desc, master_img, 
+                    location, AGENCY_NAME, tags, MODE_PHONE,
+                    # UPDATE (6개)
+                    master_title, master_desc, master_img, location, tags
+                ))
                 stats["total_rprs"] += 1
 
                 # 3. 자식 정보 저장 (tour_schedules)

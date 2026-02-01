@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-import time, logging
+import time, logging, re
 from datetime import datetime, timedelta
 from utils import extract_all_keywords, get_db_connection
 
@@ -26,7 +26,6 @@ def send_telegram_msg(text):
     try: requests.post(url, data=payload, timeout=10)
     except: pass
 
-# ✅ [수정] tags 인자를 추가로 받도록 변경
 def get_child_schedules(cursor, god_id, m1, m2, m3, m4, parent_title, start_time, tags):
     now = start_time
     months = [now.strftime("%Y%m"), (now.replace(day=28) + timedelta(days=5)).strftime("%Y%m")]
@@ -50,7 +49,10 @@ def get_child_schedules(cursor, god_id, m1, m2, m3, m4, parent_title, start_time
             rows = soup.select("tbody > tr")
 
             for row in rows:
-                date_raw = row.select("td")[1].get_text(strip=True).split('(')[0] # "01/30"
+                cols = row.select("td")
+                if len(cols) < 2: continue
+                
+                date_raw = cols[1].get_text(strip=True).split('(')[0] # "01/30"
                 mm, dd = date_raw.split('/')
                 formatted_date = f"{dep_dt[:4]}-{mm.zfill(2)}-{dd.zfill(2)}"
 
@@ -60,14 +62,13 @@ def get_child_schedules(cursor, god_id, m1, m2, m3, m4, parent_title, start_time
                 price_tag = row.select_one(".price")
                 price = ''.join(filter(str.isdigit, price_tag.get_text())) if price_tag else "0"
 
-                status_td = row.select("td")[-1]
+                status_td = cols[-1]
                 status_nm = status_td.get_text(strip=True).split('잔여석')[0].strip()
                 error_msg = None if status_nm in ["예약진행", "출발확정", "예약가능"] else status_nm
 
                 link_tag = row.select_one(".goods_list_table_evtnm a")
                 booking_url = f"{BASE_URL}{link_tag['href']}" if link_tag else ""
 
-                # ✅ [수정] tags 컬럼 추가
                 cursor.execute("""
                     INSERT INTO tour_schedules (
                         product_code, title, departure_date, price_text, 
@@ -119,8 +120,17 @@ def run_collection():
                     break
 
                 for item in items:
-                    god_id = item.select_one(".devCuponView")['godid'].strip()
+                    god_id_tag = item.select_one(".devCuponView")
+                    if not god_id_tag: continue
+                    god_id = god_id_tag['godid'].strip()
+
                     title = item.select_one(".txt strong").get_text(strip=True)
+                    
+                    # ✅ [추가] 이미지 URL 추출 및 https 보정
+                    img_tag = item.select_one(".img img")
+                    raw_img_url = img_tag.get('src') if img_tag else ""
+                    main_img_url = raw_img_url.replace("http://", "https://") if raw_img_url else ""
+
                     desc_tag = item.select_one(".txt p")
                     description = desc_tag.get_text(strip=True) if desc_tag else title
                     
@@ -130,21 +140,24 @@ def run_collection():
                     m1, m2, m3, m4 = path_parts[2], path_parts[3], path_parts[4], path_parts[5]
 
                     location = title.split(' ')[0].replace('◈', '').replace('[', '').replace(']', '').replace('《', '').replace('》', '')
-                    
-                    # ✅ [수정] 태그 추출 및 하위 함수 전달
                     tags = extract_all_keywords(title)
 
+                    # ✅ [수정] main_image_url 및 is_priority 컬럼 반영 (변수 16개 확인)
                     cursor.execute("""
-                        INSERT INTO tours (product_code, reference_code, title, description, location, collected_at, agency, category, phone)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE title=%s, description=%s, location=%s, category=%s, collected_at=%s
-                    """, (god_id, god_id, title, description, location, start_time, AGENCY_NAME, tags, LOTTE_PHONE,
-                          title, description, location, tags, start_time))
+                        INSERT INTO tours (product_code, reference_code, title, description, main_image_url, location, collected_at, agency, category, phone, is_priority)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        ON DUPLICATE KEY UPDATE 
+                            title=%s, description=%s, main_image_url=%s, location=%s, category=%s, collected_at=%s
+                    """, (
+                        # INSERT (10개)
+                        god_id, god_id, title, description, main_img_url, location, start_time, AGENCY_NAME, tags, LOTTE_PHONE,
+                        # UPDATE (6개)
+                        title, description, main_img_url, location, tags, start_time
+                    ))
                     stats["total_rprs"] += 1
 
-                    logging.info(f"📦 [{stats['total_rprs']}] {title[:20]}...")
+                    logging.info(f"📦 [{stats['total_rprs']}] {title[:20]}... (이미지 수집 완료)")
                     
-                    # ✅ [수정] tags 인자 추가 전달
                     child_count = get_child_schedules(cursor, god_id, m1, m2, m3, m4, title, start_time, tags)
                     stats["saved_schedules"] += child_count
 

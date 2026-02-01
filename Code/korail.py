@@ -27,9 +27,6 @@ def send_telegram_msg(text):
     except: pass
 
 def get_detailed_data(parent_url, headers):
-    """
-    상세 페이지의 JS를 분석하여 {날짜: 고유번호} 매핑 리스트를 가져옵니다.
-    """
     results = {"price": "0", "schedules": []}
     try:
         res = requests.get(parent_url, headers=headers, timeout=10)
@@ -37,26 +34,21 @@ def get_detailed_data(parent_url, headers):
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
 
-        # 1. 성인 가격 추출
         price_tag = soup.select_one('#adult_amt')
         if price_tag:
             results["price"] = price_tag.get_text(strip=True).replace(',', '')
 
-        # 2. JS 날짜 및 고유번호(selNum) 추출
-        # 예: {"2026-01-28":"353130", ...}
         match = re.search(r'const\s+select_info\s*=\s*(\{.*?\});', html, re.DOTALL)
         if match:
             try:
                 date_map = json.loads(match.group(1))
                 for raw_date, sel_num in date_map.items():
-                    # ✅ [수정] DB 저장용 날짜 형식을 하이픈 포함(YYYY-MM-DD)으로 유지
                     results["schedules"].append({
-                        "db_date": raw_date,       # DB 저장용 (2026-01-28)
-                        "sel_num": sel_num         # URL 파라미터용
+                        "db_date": raw_date,
+                        "sel_num": sel_num
                     })
             except: pass
         
-        # 3. JS 데이터가 없는 경우의 방어 로직
         if not results["schedules"]:
             rep_date_tag = soup.select_one('.Banner_txt strong')
             if rep_date_tag:
@@ -74,7 +66,6 @@ def get_detailed_data(parent_url, headers):
 
 def run_collection():
     start_time = datetime.now()
-    # ✅ [수정] 비교용 날짜 역시 하이픈 포함 형식으로 설정
     today_str = start_time.strftime("%Y-%m-%d")
     limit_str = (start_time + timedelta(days=30)).strftime("%Y-%m-%d")
     
@@ -93,13 +84,24 @@ def run_collection():
                 res.encoding = 'euc-kr'
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
-                items = [item for item in soup.select('.tourBox') if item.select_one('#tourBox_Title_b')]
+                items = soup.select('.tourBox')
                 if not items: break
 
                 for item in items:
-                    title_main = item.select_one('#tourBox_Title_b').get_text(strip=True)
-                    title_sub = item.select_one('#tourBox_Title_s').get_text(strip=True)
+                    title_main_tag = item.select_one('#tourBox_Title_b')
+                    title_sub_tag = item.select_one('#tourBox_Title_s')
+                    if not title_main_tag: continue
                     
+                    title_main = title_main_tag.get_text(strip=True)
+                    title_sub = title_sub_tag.get_text(strip=True) if title_sub_tag else ""
+
+                    # ✅ [추가] 이미지 URL 추출 (tourBoxImg 클래스 활용)
+                    img_tag = item.select_one('.tourBoxImg img')
+                    raw_img_url = img_tag.get('src') if img_tag else ""
+                    
+                    # http 주소를 https로 보정 (앱 보안 연결 대응)
+                    main_img_url = raw_img_url.replace("http://", "https://") if raw_img_url else ""
+
                     btn = item.select_one('.tourBox_Btn')
                     match = re.search(r'setList\(\d+,\s*(\d+)\)', btn.get('onclick', '')) if btn else None
                     if not match: continue
@@ -108,24 +110,32 @@ def run_collection():
                     parent_url = f"https://www.korailtravel.com/web/goods_view/index.asp?page_nm=goods_day&goodsNum={goods_num}"
 
                     detail_data = get_detailed_data(parent_url, {'User-Agent': 'Mozilla/5.0'})
-                    
-                    # 기간 내 유효 상품 필터링
                     valid_items = [s for s in detail_data["schedules"] if today_str <= s["db_date"] <= limit_str]
                     if not valid_items: continue
 
-                    # ✅ [추가] 태그 추출
                     tags = extract_all_keywords(title_main)
-
-                    # 1. 부모 저장
                     loc_match = re.search(r'\[(.*?)\]', title_sub)
                     location = loc_match.group(1) if loc_match else "국내"
 
+                    # 1. 부모 저장 (main_image_url 추가)
+                    # 1. 부모 저장 (INSERT 부분에 %s 하나 추가)
                     cursor.execute("""
-                        INSERT INTO tours (product_code, reference_code, title, description, location, collected_at, agency, category, phone, is_priority)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
-                        ON DUPLICATE KEY UPDATE title=%s, description=%s, location=%s, category=%s, collected_at=%s
-                    """, (goods_num, goods_num, title_main, title_sub, location, start_time, AGENCY_NAME, tags, KORAIL_PHONE,
-                          title_main, title_sub, location, tags, start_time))
+                        INSERT INTO tours (product_code, reference_code, title, description, main_image_url, location, collected_at, agency, category, phone, is_priority)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        ON DUPLICATE KEY UPDATE 
+                            title=%s, 
+                            description=%s, 
+                            main_image_url=%s, 
+                            location=%s, 
+                            category=%s, 
+                            collected_at=%s
+                    """, (
+                        # INSERT를 위한 10개 변수
+                        goods_num, goods_num, title_main, title_sub, main_img_url, 
+                        location, start_time, AGENCY_NAME, tags, KORAIL_PHONE,
+                        # UPDATE를 위한 6개 변수
+                        title_main, title_sub, main_img_url, location, tags, start_time
+                    ))
                     stats["total_rprs"] += 1
 
                     # 2. 자식 저장
@@ -142,13 +152,13 @@ def run_collection():
                               title_main, detail_data["price"], child_booking_url, start_time, start_time, tags, s['db_date']))
                         stats["saved_schedules"] += 1
 
-                    logging.info(f"   ✅ {goods_num} 동기화 완료 ({len(valid_items)}개 일정)")
+                    logging.info(f" 📸 이미지 확인: {main_img_url[:50]}...")
+                    logging.info(f" ✅ {goods_num} 동기화 완료 ({len(valid_items)}개 일정)")
                     time.sleep(0.4)
 
                 if len(items) < 10: break
                 page += 1
 
-            # 3. Cleanup & Logging
             cleanup_limit_time = start_time - timedelta(hours=1)
             cursor.execute("DELETE FROM tours WHERE agency = %s AND collected_at < %s", (AGENCY_NAME, cleanup_limit_time))
             stats["deleted_tours"] = cursor.rowcount
