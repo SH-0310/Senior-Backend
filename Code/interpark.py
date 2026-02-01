@@ -59,7 +59,7 @@ def run_collection():
             for idx, p_doc in enumerate(docs, 1):
                 parent_title = p_doc.get("goodsNm", "제목없음")
                 parent_code = p_doc.get("baseGoodsCode") or p_doc.get("goodsCode")
-                
+                main_img_url = p_doc.get("mainImgUrl", "")
                 tour_day = p_doc.get("tourDay") or ""
                 if "0박1일" not in tour_day:
                     continue
@@ -71,11 +71,14 @@ def run_collection():
 
                 # 1) 부모 저장
                 cursor.execute("""
-                    INSERT INTO tours (product_code, reference_code, title, description, location, collected_at, agency, category, phone)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE title=%s, collected_at=%s
-                """, (parent_code, parent_code, parent_title, description, location, start_time, AGENCY_NAME, categories, IP_PHONE,
-                      parent_title, start_time))
+                    INSERT INTO tours (product_code, reference_code, title, description, main_image_url, location, collected_at, agency, category, phone)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        title=%s, 
+                        main_image_url=%s, 
+                        collected_at=%s
+                """, (parent_code, parent_code, parent_title, description, main_img_url, location, start_time, AGENCY_NAME, categories, IP_PHONE,
+                    parent_title, main_img_url, start_time))
                 stats["total_rprs"] += 1
                 
                 logging.info(f"📦 [{idx}] 부모 상품: {parent_title}")
