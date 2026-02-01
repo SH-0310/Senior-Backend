@@ -1,0 +1,1 @@
+nohup python3 /home/ubuntu/Senior/Flask/app.py > /home/ubuntu/Senior/Flask/flask_run.log 2>&1 &

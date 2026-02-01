@@ -1,0 +1,7 @@
+mysql -u shmoon -p senior_travel
+
+SET FOREIGN_KEY_CHECKS = 0;
+TRUNCATE TABLE tour_schedules;
+TRUNCATE TABLE tours;
+SET FOREIGN_KEY_CHECKS = 1;
+EXIT;

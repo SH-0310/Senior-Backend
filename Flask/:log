@@ -1,0 +1,2 @@
+# 마스터/슬레이브 각 서버 터미널에서 실행
+tail -f flask_run.log
