@@ -283,19 +283,52 @@ def global_search():
         conn.close()
 
 
-# ✅ 4. 장소 상세 정보 API (contentid 기반)
-@app.route('/api/spots/<contentid>', methods=['GET'])
+@app.route('/api/spots/<int:contentid>', methods=['GET'])
 def get_spot_detail(contentid):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT * FROM picnic_spots WHERE contentid = %s"
-            cursor.execute(sql, (contentid,))
-            result = cursor.fetchone()
-            
-            if not result:
-                return jsonify({"error": "해당 장소를 찾을 수 없습니다."}), 404
-                
+            # ✅ 핵심: LEFT JOIN을 사용하여 메인 정보(Commons)가 있으면 일단 출력!
+            sql_main = """
+                SELECT 
+                    C.contentid, C.contenttypeid, C.title, C.addr1, C.addr2, 
+                    C.mapx, C.mapy, C.firstimage, C.overview, C.tel,
+                    D.parking, D.restdate, D.usetime, D.chkbabycarriage
+                FROM spot_commons C
+                LEFT JOIN spot_details D ON CAST(C.contentid AS CHAR) = CAST(D.contentid AS CHAR)
+                WHERE C.contentid = %s
+            """
+            cursor.execute(sql_main, (contentid,))
+            main_info = cursor.fetchone()
+
+            if not main_info:
+                return jsonify({"error": "장소 기본 정보를 수집 중입니다."}), 404
+
+            # ✅ 1:N 관계인 spot_info는 데이터가 없으면 빈 리스트 []가 반환됨
+            sql_sub = "SELECT infoname, infotext FROM spot_info WHERE contentid = %s"
+            cursor.execute(sql_sub, (contentid,))
+            sub_info = cursor.fetchall()
+
+            # ✅ 데이터 정리 (None 값을 안전하게 처리)
+            result = {
+                "basic": {
+                    "title": main_info.get('title', '정보 없음'),
+                    "address": main_info.get('addr1', ''),
+                    "lat": main_info.get('mapy'),
+                    "lng": main_info.get('mapx'),
+                    "image": main_info.get('firstimage', ''),
+                    "overview": main_info.get('overview', '상세 설명 정보를 준비 중입니다.')
+                },
+                "facility": {
+                    # 데이터가 없으면 "정보 없음"으로 표시하여 사용자 배려
+                    "parking": main_info.get('parking') or "정보 준비 중",
+                    "restdate": main_info.get('restdate') or "정보 준비 중",
+                    "usetime": main_info.get('usetime') or "정보 준비 중",
+                    "wheelchair": main_info.get('chkbabycarriage') or "확인 필요"
+                },
+                "extra_details": sub_info if sub_info else []
+            }
+
             return jsonify(result)
     finally:
         conn.close()
