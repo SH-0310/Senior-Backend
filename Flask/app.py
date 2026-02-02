@@ -390,6 +390,53 @@ def get_festivals():
     finally:
         conn.close()
 
+@app.route('/api/spots/region/random', methods=['GET'])
+def get_random_spots_by_region():
+    region = request.args.get('query')  # 앱에서 보낸 지역명 (예: "대구광역시 동구")
+    
+    if not region:
+        return jsonify({"error": "지역 정보가 필요합니다."}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # ✅ 핵심 로직: 
+            # 1. 해당 지역(addr1)으로 필터링
+            # 2. ORDER BY RAND()로 무작위 섞기
+            # 3. LIMIT 20으로 개수 제한
+            sql = """
+                SELECT 
+                    P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy,
+                    C.overview
+                FROM picnic_spots P
+                LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                WHERE P.addr1 LIKE %s
+                AND P.firstimage != ''  -- 사진이 있는 곳을 우선적으로 보여주는게 어르신들께 좋습니다.
+                ORDER BY RAND() 
+                LIMIT 20
+            """
+            cursor.execute(sql, (f"{region}%",))
+            results = cursor.fetchall()
+
+            # 만약 사진 있는 곳이 20개가 안 된다면, 사진 없는 곳도 포함해서 다시 조회 (보완 로직)
+            if len(results) < 5:
+                sql_fallback = """
+                    SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview
+                    FROM picnic_spots P
+                    LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                    WHERE P.addr1 LIKE %s
+                    ORDER BY RAND()
+                    LIMIT 20
+                """
+                cursor.execute(sql_fallback, (f"{region}%",))
+                results = cursor.fetchall()
+
+            return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+        
 # ✅ 헬스 체크용 API: 로드 밸런서 상태 확인용
 @app.route('/health', methods=['GET'])
 def health_check():

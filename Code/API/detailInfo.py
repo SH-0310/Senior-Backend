@@ -20,78 +20,86 @@ def get_db_connection():
 def sync_all_info_master():
     API_ACCOUNTS = load_api_configs()
     current_key_idx = 0
-    conn = get_db_connection()
     BASE_URL = "http://apis.data.go.kr/B551011/KorService2/detailInfo2"
 
-    try:
-        with conn.cursor() as cursor:
-            # ✅ 타겟: 관광지(12), 문화시설(14), 축제(15), 여행코스(25), 레포츠(28)
-            # spot_info에 아직 데이터가 없는 contentid들만 추출
-            sql_targets = """
-                SELECT contentid, contenttypeid FROM spot_commons
-                WHERE contenttypeid IN (12, 14, 15, 25, 28)
-                AND contentid NOT IN (SELECT DISTINCT contentid FROM spot_info)
-                LIMIT 500
-            """
-            cursor.execute(sql_targets)
-            targets = cursor.fetchall()
+    while True: # 🔄 무한 루프 시작: 데이터가 없을 때까지 반복
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                # 500개씩 끊어서 가져오기 (NOT IN 덕분에 자연스럽게 다음 데이터를 가져옵니다)
+                sql_targets = """
+                    SELECT contentid, contenttypeid FROM spot_commons
+                    WHERE contenttypeid IN (12, 14, 15, 25, 28)
+                    AND contentid NOT IN (SELECT DISTINCT contentid FROM spot_info)
+                    LIMIT 500
+                """
+                cursor.execute(sql_targets)
+                targets = cursor.fetchall()
 
-        if not targets:
-            print("✨ 수집할 새로운 상세 정보가 없습니다.")
-            return
+            # 🛑 탈출 조건 1: 더 이상 수집할 데이터가 없음
+            if not targets:
+                print("✨ 모든 데이터를 수집했습니다! 작업을 종료합니다.")
+                break
 
-        print(f"🚀 총 {len(targets)}건의 상세 정보(spot_info) 수집을 시작합니다.")
+            print(f"🚀 이번 회차: {len(targets)}건의 상세 정보 수집을 시작합니다. (현재 API 키 인덱스: {current_key_idx})")
 
-        for row in targets:
-            cid, tid = row['contentid'], row['contenttypeid']
-            item_list = []
+            for row in targets:
+                # 🚨 탈출 조건 2: 모든 API 키 소진 시 즉시 중단
+                if current_key_idx >= len(API_ACCOUNTS):
+                    print("🚨 모든 API 키가 소진되었습니다. 루프를 종료합니다.")
+                    return # 함수 전체 종료
 
-            while current_key_idx < len(API_ACCOUNTS):
-                acc = API_ACCOUNTS[current_key_idx]
-                params = {
-                    'serviceKey': unquote(acc['SERVICE_KEY']),
-                    'MobileOS': 'ETC', 'MobileApp': 'AppTest',
-                    '_type': 'json', 'contentId': cid, 'contentTypeId': tid
-                }
+                cid, tid = row['contentid'], row['contenttypeid']
+                item_list = []
 
-                try:
-                    res = requests.get(BASE_URL, params=params, timeout=30)
-                    data = res.json()
-                    
-                    items_container = data.get('response', {}).get('body', {}).get('items', '')
-                    if items_container and 'item' in items_container:
-                        # 아이템이 하나일 때도 리스트로 변환하여 처리
-                        item_list = items_container['item']
-                        if isinstance(item_list, dict): item_list = [item_list]
-                    break
-                except:
-                    current_key_idx += 1; continue
+                # API 호출 로직
+                while current_key_idx < len(API_ACCOUNTS):
+                    acc = API_ACCOUNTS[current_key_idx]
+                    params = {
+                        'serviceKey': unquote(acc['SERVICE_KEY']),
+                        'MobileOS': 'ETC', 'MobileApp': 'AppTest',
+                        '_type': 'json', 'contentId': cid, 'contentTypeId': tid
+                    }
 
-            if item_list:
-                with conn.cursor() as cursor:
-                    for item in item_list:
-                        # ✅ 테이블 이름 spot_info 적용
-                        sql = """
-                            INSERT IGNORE INTO spot_info (
-                                contentid, contenttypeid, serialnum, 
-                                infoname, infotext, fldgubun,
-                                subcontentid, subname, subdetailoverview, subdetailimg, subdetailalt
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                        cursor.execute(sql, (
-                            cid, tid, item.get('serialnum') or item.get('subnum'),
-                            item.get('infoname'), item.get('infotext'), item.get('fldgubun'),
-                            item.get('subcontentid'), item.get('subname'),
-                            item.get('subdetailoverview'), item.get('subdetailimg'), item.get('subdetailalt')
-                        ))
-                conn.commit()
-                print(f"✅ ID {cid} 상세 정보 {len(item_list)}건 저장 완료")
-            
-            time.sleep(0.15)
+                    try:
+                        res = requests.get(BASE_URL, params=params, timeout=30)
+                        data = res.json()
+                        items_container = data.get('response', {}).get('body', {}).get('items', '')
+                        
+                        if items_container and 'item' in items_container:
+                            item_list = items_container['item']
+                            if isinstance(item_list, dict): item_list = [item_list]
+                        break # 성공 시 while 키 루프 탈출
+                    except:
+                        print(f"⚠️ 키 {acc['MOBILE_APP']} 교체 시도...")
+                        current_key_idx += 1
+                        continue
 
-    finally:
-        conn.close()
-        print("🏁 spot_info 테이블 수집 작업이 완료되었습니다.")
+                # DB 저장 로직
+                if item_list:
+                    with conn.cursor() as cursor:
+                        for item in item_list:
+                            sql = """
+                                INSERT IGNORE INTO spot_info (
+                                    contentid, contenttypeid, serialnum, 
+                                    infoname, infotext, fldgubun,
+                                    subcontentid, subname, subdetailoverview, subdetailimg, subdetailalt
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """
+                            cursor.execute(sql, (
+                                cid, tid, item.get('serialnum') or item.get('subnum'),
+                                item.get('infoname'), item.get('infotext'), item.get('fldgubun'),
+                                item.get('subcontentid'), item.get('subname'),
+                                item.get('subdetailoverview'), item.get('subdetailimg'), item.get('subdetailalt')
+                            ))
+                    conn.commit()
+                    # print(f"✅ ID {cid} 저장 완료") # 로그가 너무 많으면 이 줄을 주석처리하세요
+
+                time.sleep(0.1) # 서버 부하 방지
+
+        finally:
+            conn.close() # 500개 주기가 끝날 때마다 연결을 닫아 안정성 확보
+            print(f"📦 500개 배치 완료. 다음 배치를 준비합니다...")
 
 if __name__ == "__main__":
     sync_all_info_master()
