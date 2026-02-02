@@ -168,24 +168,22 @@ def get_promotions():
     finally:
         conn.close()
 
-# ✅ 3. 테마 2: 내 주변 + 검색 지원 API
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
-    lat = request.args.get('lat')
-    lng = request.args.get('lng')
-    radius = float(request.args.get('radius', 20))
-    keyword = request.args.get('keyword') # ✅ 안드로이드의 searchQuery를 받음
-    category = request.args.get('category')
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    
+    # ✅ 최소/최대 반경을 받습니다. (예: 5km ~ 10km)
+    min_radius = request.args.get('min_radius', default=0.0, type=float)
+    max_radius = request.args.get('max_radius', default=10.0, type=float)
+    
+    keyword = request.args.get('keyword')
     limit = int(request.args.get('limit', 20))
-    offset = int(request.args.get('offset', 0))
-
-    if not lat or not lng:
-        return jsonify({"error": "위치 정보가 필요합니다."}), 400
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 기본 하버사인 거리 계산 포함 SQL
+            # 1. 기본 거리 계산 쿼리
             sql = """
                 SELECT *, (
                     6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
@@ -197,23 +195,24 @@ def get_nearby_spots():
             params = [lat, lng, lat]
             where_clauses = []
 
-            # ✅ [수정] 검색어가 있다면 제목이나 주소에서 필터링
-            if keyword:
+            # 2. 검색어 처리 (검색어 있을 땐 전국구로 확장)
+            if keyword and keyword.strip():
                 where_clauses.append("(title LIKE %s OR addr1 LIKE %s)")
                 params.extend([f"%{keyword}%", f"%{keyword}%"])
-                # 검색어가 있을 때는 반경 제한을 대폭 늘려줌 (서울에서 부산 검색 가능하게)
-                radius = 500 
-
-            if category:
-                where_clauses.append("contenttypeid = %s")
-                params.append(category)
+                # 검색 시에는 구간 제한을 없애는 것이 좋습니다.
+                min_radius = 0.0
+                max_radius = 500.0
 
             if where_clauses:
                 sql += " WHERE " + " AND ".join(where_clauses)
 
-            # 반경 필터 및 정렬
-            sql += " HAVING distance <= %s ORDER BY distance ASC LIMIT %s OFFSET %s"
-            params.extend([radius, limit, offset])
+            # ✅ 3. 명확한 구간 필터링 (min < distance <= max)
+            sql += " HAVING distance > %s AND distance <= %s "
+            params.extend([min_radius, max_radius])
+
+            # 4. 정렬 (가까운 순 혹은 랜덤 선택 가능)
+            sql += " ORDER BY distance ASC LIMIT %s"
+            params.append(limit)
 
             cursor.execute(sql, params)
             results = cursor.fetchall()
@@ -436,7 +435,7 @@ def get_random_spots_by_region():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
-        
+
 # ✅ 헬스 체크용 API: 로드 밸런서 상태 확인용
 @app.route('/health', methods=['GET'])
 def health_check():
