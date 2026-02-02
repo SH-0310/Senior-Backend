@@ -237,23 +237,24 @@ def global_search():
             # ✅ 1. 패키지 검색 (기존 /api/tours의 로직과 이름을 앱에 맞춤)
             # - s.departure_date >= 오늘날짜: 이미 지난 여행은 검색 안 되게 필터링
             # - main_image_url as mainImageUrl: 안드로이드의 카멜케이스 변수명과 일치시킴
+            # app.py 의 global_search 함수 내 sql_tours 수정
             sql_tours = """
                 SELECT 
-                    s.title as title, 
-                    s.departure_date as date, 
-                    s.price_text as price, 
-                    s.booking_url as bookingUrl,
-                    t.province, 
-                    t.city, 
-                    t.agency,
-                    s.tags,
-                    t.main_image_url as mainImageUrl  -- ⬅️ 중요: 앱에서 mainImageUrl로 찾음
+                    ANY_VALUE(s.title) as title,              -- 여러 제목 중 아무거나 하나
+                    MIN(s.departure_date) as date,            -- 가장 빠른 출발 날짜
+                    ANY_VALUE(s.price_text) as price,         -- 가격 정보
+                    ANY_VALUE(s.booking_url) as bookingUrl,   -- 예약 링크
+                    ANY_VALUE(t.province) as province, 
+                    ANY_VALUE(t.city) as city, 
+                    ANY_VALUE(t.agency) as agency,
+                    ANY_VALUE(s.tags) as tags,
+                    ANY_VALUE(t.main_image_url) as mainImageUrl
                 FROM tour_schedules s
                 JOIN tours t ON s.product_code = t.product_code
                 WHERE (s.title LIKE %s OR t.category LIKE %s)
-                  AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
-                GROUP BY s.product_code
-                ORDER BY s.departure_date ASC
+                AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
+                GROUP BY s.product_code                      -- 상품 코드별로 하나씩 묶음
+                ORDER BY date ASC                            -- 날짜순 정렬
                 LIMIT 5
             """
             cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
