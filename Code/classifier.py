@@ -114,16 +114,44 @@ def classify_location(title):
                 return province_display, city_name
     return "기타", "기타"
 
-# ✅ 태그(배지)만 추출하는 로직
 def extract_tags_only(raw_title):
     tag_list = []
-    if any(k in raw_title for k in ["중식", "석식", "조식", "식사제공", "도시락", "뷔페"]): tag_list.append("식사포함")
-    if "출발확정" in raw_title or "확정" in raw_title: tag_list.append("출발확정")
-    if any(k in raw_title for k in ["KTX", "SRT", "새마을", "무궁화", "열차", "기차"]): tag_list.append("KTX")
-    if any(k in raw_title for k in ["버스", "리무진", "셔틀"]): tag_list.append("전용버스")
-    if any(k in raw_title for k in ["축제", "장터", "박람회", "체험", "만들기", "따기"]): tag_list.append("축제/체험")
-    if any(k in raw_title for k in ["섬", "바다", "해변", "항구", "유람선", "크루즈"]): tag_list.append("바다/섬")
-    if any(k in raw_title for k in ["온천", "스파", "수목원", "숲", "산책", "힐링", "명상"]): tag_list.append("힐링/온천")
+    
+    # 🍱 식사 관련
+    if any(k in raw_title for k in ["중식", "석식", "조식", "식사제공", "도시락", "뷔페"]): 
+        tag_list.append("식사포함")
+    
+    # ✅ 예약 상태
+    if "출발확정" in raw_title or "확정" in raw_title: 
+        tag_list.append("출발확정")
+    
+    # 🚄 기차 세분화 로직 (수정됨)
+    if "KTX" in raw_title: tag_list.append("KTX")
+    if "SRT" in raw_title: tag_list.append("SRT")
+    if "새마을" in raw_title: tag_list.append("새마을호")
+    if "무궁화" in raw_title: tag_list.append("무궁화호")
+    
+    # 특정 브랜드 없이 '열차'나 '기차' 단어만 있는 경우를 위해 체크
+    # (단, KTX나 SRT 등 구체적인 이름이 이미 있다면 '기차' 태그는 중복이라 판단하여 제외할 수 있지만, 
+    #  명확한 분류를 위해 키워드 존재 시 추가합니다.)
+    if any(k in raw_title for k in ["열차", "기차"]):
+        # 구체적인 기차 브랜드가 없을 때만 '기차' 태그를 붙이고 싶다면 아래와 같이 조건 추가 가능
+        if not any(x in tag_list for x in ["KTX", "SRT", "새마을호", "무궁화호"]):
+            tag_list.append("기차")
+
+    # 🚌 버스 관련
+    if any(k in raw_title for k in ["버스", "리무진", "셔틀"]): 
+        tag_list.append("전용버스")
+    
+    # 🎡 테마 관련
+    if any(k in raw_title for k in ["축제", "장터", "박람회", "체험", "만들기", "따기"]): 
+        tag_list.append("축제/체험")
+    
+    if any(k in raw_title for k in ["섬", "바다", "해변", "항구", "유람선", "크루즈"]): 
+        tag_list.append("바다/섬")
+    
+    if any(k in raw_title for k in ["온천", "스파", "수목원", "숲", "산책", "힐링", "명상"]): 
+        tag_list.append("힐링/온천")
 
     return ",".join(tag_list)
 

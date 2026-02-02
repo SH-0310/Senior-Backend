@@ -9,16 +9,15 @@ import os
 def load_api_configs():
     config_path = 'api_config.json'
     if not os.path.exists(config_path):
-        print(f"🚨 설정 파일({config_path})이 없습니다. 파일을 먼저 생성해주세요.")
+        print(f"🚨 설정 파일({config_path})이 없습니다!")
         exit()
     with open(config_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-# 여러 개의 계정 정보 로드
 API_ACCOUNTS = load_api_configs()
-current_key_idx = 0  # 현재 사용 중인 키 번호 (0부터 시작)
+current_key_idx = 0 
 
-# --- [DB 연결 설정] ---
+# --- [2. DB 연결 설정] ---
 def get_db_connection():
     return pymysql.connect(
         host='localhost',
@@ -29,7 +28,7 @@ def get_db_connection():
         cursorclass=pymysql.cursors.DictCursor
     )
 
-# --- [필드 매핑 로직] ---
+# --- [3. 필드 매핑 로직] ---
 def map_standard_fields(item):
     return {
         'contentid': item.get('contentid'),
@@ -52,6 +51,7 @@ def map_standard_fields(item):
         'raw_data': json.dumps(item, ensure_ascii=False)
     }
 
+# --- [4. 메인 수집 함수] ---
 def sync_details():
     global current_key_idx
     conn = get_db_connection()
@@ -59,12 +59,7 @@ def sync_details():
 
     try:
         with conn.cursor() as cursor:
-            sql_targets = """
-                SELECT p.contentid, p.contenttypeid 
-                FROM picnic_spots p
-                LEFT JOIN spot_details d ON p.contentid = d.contentid
-                WHERE d.contentid IS NULL
-            """
+            sql_targets = "SELECT p.contentid, p.contenttypeid FROM picnic_spots p LEFT JOIN spot_details d ON p.contentid = d.contentid WHERE d.contentid IS NULL"
             cursor.execute(sql_targets)
             targets = cursor.fetchall()
 
@@ -74,50 +69,52 @@ def sync_details():
         for i, row in enumerate(targets):
             cid, tid = row['contentid'], row['contenttypeid']
             item_data = None
+            retry_count = 0
 
-            # --- [강화된 키 로테이션 루프] ---
             while current_key_idx < len(API_ACCOUNTS):
                 acc = API_ACCOUNTS[current_key_idx]
                 params = {
                     'serviceKey': unquote(acc['SERVICE_KEY']),
-                    'MobileOS': 'AND',
-                    'MobileApp': acc['MOBILE_APP'],
-                    '_type': 'json',
-                    'contentId': cid,
-                    'contentTypeId': tid
+                    'MobileOS': 'AND', 'MobileApp': acc['MOBILE_APP'],
+                    '_type': 'json', 'contentId': cid, 'contentTypeId': tid
                 }
 
                 try:
-                    response = requests.get(DETAIL_URL, params=params, timeout=15)
+                    response = requests.get(DETAIL_URL, params=params, timeout=30)
                     
-                    # 1. 상태 코드가 200이 아니거나, 'LIMITED' 문구가 있거나, 응답 내용이 너무 짧으면 키 교체
-                    if response.status_code != 200 or "LIMITED" in response.text or len(response.text) < 100:
-                        print(f"⚠️ 계정 [{acc['MOBILE_APP']}] 이상 감지 (한도초과 의심). 키를 교체합니다.")
+                    # 비정상 응답(XML 에러, 한도 초과 등) 체크
+                    if "<?xml" in response.text or "LIMITED" in response.text or len(response.text) < 150:
+                        print(f"⚠️ 계정 [{acc['MOBILE_APP']}] 이상 감지 (한도초과 의심). 키 교체.")
                         current_key_idx += 1
-                        continue # 즉시 다음 키로 재시도
+                        retry_count = 0 # 새 키로 시작하니 카운트 초기화
+                        continue
 
-                    # 2. JSON 파싱 시도
                     data = response.json()
                     body = data.get('response', {}).get('body', {})
-                    
-                    # 3. 정상 데이터 확인
                     if body and 'items' in body and body['items'] != "":
                         item_data = body['items']['item'][0]
-                    
-                    break # 성공했으므로 while 루프 탈출
-                
-                except (json.JSONDecodeError, requests.exceptions.RequestException) as e:
-                    # JSON 해석 실패 시(line 1 column 1 등) 높은 확률로 한도 초과임
-                    print(f"⚠️ 계정 [{acc['MOBILE_APP']}] 응답 해석 불가. 다음 키로 전환합니다.")
-                    current_key_idx += 1
-                    continue # 즉시 다음 키로 재시도
+                    break 
 
-            # 모든 키 소진 여부 확인
+                except requests.exceptions.Timeout:
+                    retry_count += 1
+                    if retry_count >= 3:
+                        print(f"⏳ [{acc['MOBILE_APP']}] 3회 타임아웃 발생. 다음 키로 넘어갑니다.")
+                        current_key_idx += 1
+                        retry_count = 0
+                    else:
+                        print(f"⏳ [{acc['MOBILE_APP']}] 응답 지연. 재시도 중... ({retry_count}/3)")
+                        time.sleep(2)
+                    continue 
+
+                except Exception as e:
+                    print(f"⚠️ [{acc['MOBILE_APP']}] 해석 불가/통신 오류: {e}")
+                    current_key_idx += 1
+                    break 
+
             if current_key_idx >= len(API_ACCOUNTS):
-                print("🚨 [중단] 사용 가능한 모든 API 키가 소진되었습니다.")
+                print("🚨 [중단] 모든 API 키가 소진되었습니다.")
                 break
 
-            # --- [DB 저장 로직] ---
             if item_data:
                 clean = map_standard_fields(item_data)
                 with conn.cursor() as cursor:
@@ -136,11 +133,11 @@ def sync_details():
                     """
                     cursor.execute(sql_insert, clean)
                 conn.commit()
-                print(f"✅ [{i+1}/{total}] {cid} 저장 완료 (Key: {API_ACCOUNTS[current_key_idx]['MOBILE_APP']})")
+                print(f"✅ [{i+1}/{total}] {cid} 저장 완료")
             else:
                 print(f"❓ [{i+1}/{total}] {cid} 데이터 없음 (Skip)")
 
-            time.sleep(0.2)
+            time.sleep(0.3)
 
     except Exception as e:
         print(f"❗ 치명적 오류 발생: {e}")
