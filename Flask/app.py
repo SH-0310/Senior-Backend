@@ -221,7 +221,7 @@ def get_nearby_spots():
     finally:
         conn.close()
 
-# ✅ 5. [신규] 통합 검색 API: 패키지 + 소풍지 시너지의 핵심
+# app.py 수정본
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
     query = request.args.get('q', '')
@@ -234,19 +234,22 @@ def global_search():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. 패키지(Tours) 검색
+            # 1. 패키지 검색 (GROUP BY 에러 수정: DISTINCT 사용)
+            # 가장 빠른 날짜의 상품 위주로 5개만 추출
             sql_tours = """
-                SELECT t.*, s.departure_date as date, s.price_text as price, s.booking_url 
-                FROM tours t 
-                JOIN tour_schedules s ON t.product_code = s.product_code
+                SELECT DISTINCT t.product_code, t.title as parent_title, t.province, t.city,
+                       t.agency, t.main_image_url,
+                       (SELECT MIN(departure_date) FROM tour_schedules WHERE product_code = t.product_code) as date,
+                       (SELECT price_text FROM tour_schedules WHERE product_code = t.product_code LIMIT 1) as price,
+                       (SELECT booking_url FROM tour_schedules WHERE product_code = t.product_code LIMIT 1) as booking_url
+                FROM tours t
                 WHERE t.title LIKE %s OR t.category LIKE %s
-                GROUP BY t.product_code
                 LIMIT 5
             """
             cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
             packages = cursor.fetchall()
 
-            # 2. 소풍지(Spots) 검색 (거리순)
+            # 2. 소풍지 검색 (필수: 위도/경도 숫자형 변환 확인)
             sql_spots = """
                 SELECT *, (
                     6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
@@ -258,13 +261,16 @@ def global_search():
                 ORDER BY distance ASC
                 LIMIT 5
             """
-            cursor.execute(sql_spots, (lat, lng, lat, f"%{query}%", f"%{query}%"))
+            cursor.execute(sql_spots, (float(lat), float(lng), float(lat), f"%{query}%", f"%{query}%"))
             spots = cursor.fetchall()
 
             return jsonify({
                 "packages": packages,
                 "spots": spots
             })
+    except Exception as e:
+        print(f"🚨 Search Error: {e}")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
