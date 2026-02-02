@@ -168,55 +168,103 @@ def get_promotions():
     finally:
         conn.close()
 
-# ✅ 3. 테마 2: 내 주변 나들이 장소 API (거리순 정렬 + 페이징)
+# ✅ 3. 테마 2: 내 주변 + 검색 지원 API
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
-    lat = request.args.get('lat')   # 사용자 현재 위도
-    lng = request.args.get('lng')   # 사용자 현재 경도
-    radius = request.args.get('radius', 20) # 검색 반경 (기본 20km)
-    category = request.args.get('category') # 12, 14, 15 등 필터
+    lat = request.args.get('lat')
+    lng = request.args.get('lng')
+    radius = float(request.args.get('radius', 20))
+    keyword = request.args.get('keyword') # ✅ 안드로이드의 searchQuery를 받음
+    category = request.args.get('category')
     limit = int(request.args.get('limit', 20))
     offset = int(request.args.get('offset', 0))
 
     if not lat or not lng:
-        return jsonify({"error": "위치 정보(lat, lng)가 필요합니다."}), 400
+        return jsonify({"error": "위치 정보가 필요합니다."}), 400
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 하버사인(Haversine) 공식을 이용한 MySQL 거리 계산 쿼리
-            # 6371은 지구의 반지름(km)입니다.
+            # 기본 하버사인 거리 계산 포함 SQL
             sql = """
                 SELECT *, (
-                    6371 * acos(
-                        cos(radians(%s)) * cos(radians(mapy)) 
-                        * cos(radians(mapx) - radians(%s)) 
-                        + sin(radians(%s)) * sin(radians(mapy))
-                    )
+                    6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
+                    * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) 
+                    * sin(radians(mapy)))
                 ) AS distance 
                 FROM picnic_spots
             """
             params = [lat, lng, lat]
-
-            # 필터 조건 추가
             where_clauses = []
+
+            # ✅ [수정] 검색어가 있다면 제목이나 주소에서 필터링
+            if keyword:
+                where_clauses.append("(title LIKE %s OR addr1 LIKE %s)")
+                params.extend([f"%{keyword}%", f"%{keyword}%"])
+                # 검색어가 있을 때는 반경 제한을 대폭 늘려줌 (서울에서 부산 검색 가능하게)
+                radius = 500 
+
             if category:
                 where_clauses.append("contenttypeid = %s")
                 params.append(category)
-            
+
             if where_clauses:
                 sql += " WHERE " + " AND ".join(where_clauses)
 
-            # 반경 제한 및 정렬
+            # 반경 필터 및 정렬
             sql += " HAVING distance <= %s ORDER BY distance ASC LIMIT %s OFFSET %s"
-            params.extend([float(radius), limit, offset])
+            params.extend([radius, limit, offset])
 
             cursor.execute(sql, params)
             results = cursor.fetchall()
-            
             return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ✅ 5. [신규] 통합 검색 API: 패키지 + 소풍지 시너지의 핵심
+@app.route('/api/search/global', methods=['GET'])
+def global_search():
+    query = request.args.get('q', '')
+    lat = request.args.get('lat', 37.5665)
+    lng = request.args.get('lng', 126.9780)
+
+    if not query:
+        return jsonify({"packages": [], "spots": []})
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 패키지(Tours) 검색
+            sql_tours = """
+                SELECT t.*, s.departure_date as date, s.price_text as price, s.booking_url 
+                FROM tours t 
+                JOIN tour_schedules s ON t.product_code = s.product_code
+                WHERE t.title LIKE %s OR t.category LIKE %s
+                GROUP BY t.product_code
+                LIMIT 5
+            """
+            cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
+            packages = cursor.fetchall()
+
+            # 2. 소풍지(Spots) 검색 (거리순)
+            sql_spots = """
+                SELECT *, (
+                    6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
+                    * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) 
+                    * sin(radians(mapy)))
+                ) AS distance 
+                FROM picnic_spots
+                WHERE title LIKE %s OR addr1 LIKE %s
+                ORDER BY distance ASC
+                LIMIT 5
+            """
+            cursor.execute(sql_spots, (lat, lng, lat, f"%{query}%", f"%{query}%"))
+            spots = cursor.fetchall()
+
+            return jsonify({
+                "packages": packages,
+                "spots": spots
+            })
     finally:
         conn.close()
 
