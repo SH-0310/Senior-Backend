@@ -221,12 +221,12 @@ def get_nearby_spots():
     finally:
         conn.close()
 
-# app.py의 global_search 함수 내부 수정
+# app.py의 global_search 함수 수정본
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
     query = request.args.get('q', '')
-    lat = request.args.get('lat', 37.5665)
-    lng = request.args.get('lng', 126.9780)
+    lat = float(request.args.get('lat', 37.5665))
+    lng = float(request.args.get('lng', 126.9780))
 
     if not query:
         return jsonify({"packages": [], "spots": []})
@@ -234,27 +234,32 @@ def global_search():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # ✅ 1. 패키지 검색 수정: tour_schedules(s)의 제목을 검색하고 가져옴
+            # ✅ 1. 패키지 검색 (기존 /api/tours의 로직과 이름을 앱에 맞춤)
+            # - s.departure_date >= 오늘날짜: 이미 지난 여행은 검색 안 되게 필터링
+            # - main_image_url as mainImageUrl: 안드로이드의 카멜케이스 변수명과 일치시킴
             sql_tours = """
                 SELECT 
-                    s.title as title,                -- ✅ 실제 상품명 (안드로이드 tour.title과 매칭)
-                    s.departure_date as date,        -- ✅ 출발 날짜
-                    s.price_text as price,           -- ✅ 가격 정보
-                    s.booking_url,                   -- ✅ 예약 링크
-                    t.province, t.city, t.agency, 
-                    t.main_image_url
+                    s.title as title, 
+                    s.departure_date as date, 
+                    s.price_text as price, 
+                    s.booking_url as bookingUrl,
+                    t.province, 
+                    t.city, 
+                    t.agency,
+                    s.tags,
+                    t.main_image_url as mainImageUrl  -- ⬅️ 중요: 앱에서 mainImageUrl로 찾음
                 FROM tour_schedules s
                 JOIN tours t ON s.product_code = t.product_code
-                WHERE s.title LIKE %s                -- ✅ 검색 대상 변경 (부모 타이틀 -> 스케줄 타이틀)
-                   OR t.category LIKE %s
-                GROUP BY s.product_code              -- 동일 상품의 여러 날짜 중 하나만 노출
+                WHERE (s.title LIKE %s OR t.category LIKE %s)
+                  AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
+                GROUP BY s.product_code
                 ORDER BY s.departure_date ASC
                 LIMIT 5
             """
             cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
             packages = cursor.fetchall()
 
-            # 2. 소풍지 검색 (동일 유지)
+            # ✅ 2. 소풍지 검색 (거리순 정렬 유지)
             sql_spots = """
                 SELECT *, (
                     6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
@@ -266,7 +271,7 @@ def global_search():
                 ORDER BY distance ASC
                 LIMIT 5
             """
-            cursor.execute(sql_spots, (float(lat), float(lng), float(lat), f"%{query}%", f"%{query}%"))
+            cursor.execute(sql_spots, (lat, lng, lat, f"%{query}%", f"%{query}%"))
             spots = cursor.fetchall()
 
             return jsonify({
@@ -274,7 +279,7 @@ def global_search():
                 "spots": spots
             })
     except Exception as e:
-        print(f"🚨 Search Error: {e}")
+        print(f"🚨 통합 검색 에러: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
