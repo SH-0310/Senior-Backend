@@ -288,48 +288,60 @@ def get_spot_detail(contentid):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # ✅ 핵심: LEFT JOIN을 사용하여 메인 정보(Commons)가 있으면 일단 출력!
+            # 1. 메인 쿼리: picnic_spots를 기준으로 정보를 통합합니다.
+            # CAST를 사용하여 varchar와 int 간의 ID 매칭을 확실히 합니다.
             sql_main = """
                 SELECT 
-                    C.contentid, C.contenttypeid, C.title, C.addr1, C.addr2, 
-                    C.mapx, C.mapy, C.firstimage, C.overview, C.tel,
+                    P.contentid, P.contenttypeid, P.title, P.addr1, P.addr2, 
+                    P.mapx, P.mapy, P.firstimage, P.tel,
+                    C.overview,
                     D.parking, D.restdate, D.usetime, D.chkbabycarriage
-                FROM spot_commons C
-                LEFT JOIN spot_details D ON CAST(C.contentid AS CHAR) = CAST(D.contentid AS CHAR)
-                WHERE C.contentid = %s
+                FROM picnic_spots P
+                LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                LEFT JOIN spot_details D ON CAST(P.contentid AS CHAR) = CAST(D.contentid AS CHAR)
+                WHERE P.contentid = %s
             """
             cursor.execute(sql_main, (contentid,))
             main_info = cursor.fetchone()
 
+            # picnic_spots에 데이터가 없다면 404 처리
             if not main_info:
-                return jsonify({"error": "장소 기본 정보를 수집 중입니다."}), 404
+                return jsonify({"error": "해당 장소의 기본 정보를 찾을 수 없습니다."}), 404
 
-            # ✅ 1:N 관계인 spot_info는 데이터가 없으면 빈 리스트 []가 반환됨
-            sql_sub = "SELECT infoname, infotext FROM spot_info WHERE contentid = %s"
-            cursor.execute(sql_sub, (contentid,))
+            # 2. 추가 반복 정보 (spot_info): 화장실, 입장료 등 상세 리스트
+            sql_sub = """
+                SELECT infoname, infotext 
+                FROM spot_info 
+                WHERE CAST(contentid AS CHAR) = %s
+                ORDER BY serialnum ASC
+            """
+            cursor.execute(sql_sub, (str(contentid),))
             sub_info = cursor.fetchall()
 
-            # ✅ 데이터 정리 (None 값을 안전하게 처리)
+            # 3. 최종 데이터 가공 및 응답
             result = {
                 "basic": {
                     "title": main_info.get('title', '정보 없음'),
-                    "address": main_info.get('addr1', ''),
+                    "address": f"{main_info.get('addr1', '')} {main_info.get('addr2', '')}".strip(),
                     "lat": main_info.get('mapy'),
                     "lng": main_info.get('mapx'),
                     "image": main_info.get('firstimage', ''),
-                    "overview": main_info.get('overview', '상세 설명 정보를 준비 중입니다.')
+                    "tel": main_info.get('tel', ''),
+                    "overview": main_info.get('overview') or "상세 설명 정보를 준비 중입니다."
                 },
                 "facility": {
-                    # 데이터가 없으면 "정보 없음"으로 표시하여 사용자 배려
                     "parking": main_info.get('parking') or "정보 준비 중",
                     "restdate": main_info.get('restdate') or "정보 준비 중",
-                    "usetime": main_info.get('usetime') or "정보 준비 중",
+                    "usetime": main_info.get('usetime') or "상시 개방",
                     "wheelchair": main_info.get('chkbabycarriage') or "확인 필요"
                 },
                 "extra_details": sub_info if sub_info else []
             }
 
             return jsonify(result)
+            
+    except Exception as e:
+        return jsonify({"error": f"서버 에러가 발생했습니다: {str(e)}"}), 500
     finally:
         conn.close()
 
