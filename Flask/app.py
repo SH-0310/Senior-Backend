@@ -221,7 +221,7 @@ def get_nearby_spots():
     finally:
         conn.close()
 
-# app.py 수정본
+# app.py의 global_search 함수 내부 수정
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
     query = request.args.get('q', '')
@@ -234,22 +234,27 @@ def global_search():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. 패키지 검색 (GROUP BY 에러 수정: DISTINCT 사용)
-            # 가장 빠른 날짜의 상품 위주로 5개만 추출
+            # ✅ 1. 패키지 검색 수정: tour_schedules(s)의 제목을 검색하고 가져옴
             sql_tours = """
-                SELECT DISTINCT t.product_code, t.title as parent_title, t.province, t.city,
-                       t.agency, t.main_image_url,
-                       (SELECT MIN(departure_date) FROM tour_schedules WHERE product_code = t.product_code) as date,
-                       (SELECT price_text FROM tour_schedules WHERE product_code = t.product_code LIMIT 1) as price,
-                       (SELECT booking_url FROM tour_schedules WHERE product_code = t.product_code LIMIT 1) as booking_url
-                FROM tours t
-                WHERE t.title LIKE %s OR t.category LIKE %s
+                SELECT 
+                    s.title as title,                -- ✅ 실제 상품명 (안드로이드 tour.title과 매칭)
+                    s.departure_date as date,        -- ✅ 출발 날짜
+                    s.price_text as price,           -- ✅ 가격 정보
+                    s.booking_url,                   -- ✅ 예약 링크
+                    t.province, t.city, t.agency, 
+                    t.main_image_url
+                FROM tour_schedules s
+                JOIN tours t ON s.product_code = t.product_code
+                WHERE s.title LIKE %s                -- ✅ 검색 대상 변경 (부모 타이틀 -> 스케줄 타이틀)
+                   OR t.category LIKE %s
+                GROUP BY s.product_code              -- 동일 상품의 여러 날짜 중 하나만 노출
+                ORDER BY s.departure_date ASC
                 LIMIT 5
             """
             cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
             packages = cursor.fetchall()
 
-            # 2. 소풍지 검색 (필수: 위도/경도 숫자형 변환 확인)
+            # 2. 소풍지 검색 (동일 유지)
             sql_spots = """
                 SELECT *, (
                     6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
