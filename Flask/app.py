@@ -345,7 +345,50 @@ def get_spot_detail(contentid):
     finally:
         conn.close()
 
+from datetime import datetime
 
+@app.route('/api/festivals', methods=['GET'])
+def get_festivals():
+    # 쿼리 파라미터로 지역(area)이나 진행 상태(status)를 받을 수 있게 구성
+    area_code = request.args.get('areaCode')
+    today = datetime.now().strftime('%Y%m%d') # 현재 날짜 (YYYYMMDD 형식)
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 기본 쿼리: 진행 중이거나 예정된 축제를 우선순위로 정렬
+            # (종료된 축제는 뒤로 밀거나 제외 가능)
+            sql = """
+                SELECT 
+                    F.contentid, F.title, F.addr1, F.firstimage, 
+                    F.eventstartdate, F.eventenddate, F.tel, F.mapx, F.mapy,
+                    C.overview
+                FROM festivals F
+                LEFT JOIN spot_commons C ON F.contentid = C.contentid
+                WHERE F.eventenddate >= %s
+            """
+            params = [today]
+
+            if area_code:
+                sql += " AND F.areacode = %s"
+                params.append(area_code)
+            
+            sql += " ORDER BY F.eventstartdate ASC"
+            
+            cursor.execute(sql, params)
+            results = cursor.fetchall()
+
+            # 2. 데이터 가공: D-Day나 상태값(진행중/예정) 계산해서 추가
+            for row in results:
+                start = row['eventstartdate']
+                if start <= today:
+                    row['status'] = "진행 중"
+                else:
+                    row['status'] = f"예정 ({start[4:6]}/{start[6:8]} 시작)"
+
+            return jsonify(results)
+    finally:
+        conn.close()
 
 # ✅ 헬스 체크용 API: 로드 밸런서 상태 확인용
 @app.route('/health', methods=['GET'])
