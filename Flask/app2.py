@@ -24,13 +24,16 @@ def clean_html(text):
     """HTML 태그 제거 및 줄바꿈 변환"""
     if not text:
         return ""
+    # 1. <br>, <br/> 등을 실제 줄바꿈(\n)으로 변환
     text = re.sub(r'<br\s*/?>', '\n', text)
+    # 2. 나머지 모든 HTML 태그 제거
     text = re.sub(r'<[^>]+>', '', text)
+    # 3. 중복된 공백 및 줄바꿈 정리
     return text.strip()
 
 # --- API 경로 시작 ---
 
-# ✅ 1. 검색 및 전체 리스트용 (에러 핸들링 추가)
+# ✅ 1. 기존 API: 검색 및 전체 리스트용
 @app.route('/api/tours', methods=['GET'])
 def get_tours():
     target_date = request.args.get('date')
@@ -40,10 +43,14 @@ def get_tours():
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT t.province, t.city, t.title as parent_title, s.title as title,
-                       s.price_text as price, t.agency, t.category, s.departure_date as date, 
-                       t.phone, t.is_priority, t.location, s.booking_url, s.error_msg,
-                       s.tags, t.main_image_url
+                SELECT 
+                    t.province, t.city,
+                    t.title as parent_title, s.title as title,
+                    s.price_text as price, t.agency, t.category, 
+                    s.departure_date as date, t.phone, t.is_priority, 
+                    t.location, s.booking_url, s.error_msg,
+                    s.tags,
+                    t.main_image_url
                 FROM tours t
                 JOIN tour_schedules s ON t.product_code = s.product_code
                 WHERE REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
@@ -62,20 +69,20 @@ def get_tours():
             results = cursor.fetchall()
             
             for row in results:
+                # 텍스트 클리닝 적용
                 row['title'] = clean_html(row['title'])
                 row['parent_title'] = clean_html(row['parent_title'])
                 row['tags'] = clean_html(row['tags'])
-                if row.get('date'):
+                if row['date']:
                     raw_val = str(row['date']).replace('-', '')
                     if len(raw_val) == 8:
                         row['date'] = f"{raw_val[:4]}-{raw_val[4:6]}-{raw_val[6:]}"
+            
             return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
-# ✅ 2. 지역별 그룹화 API (에러 핸들링 추가)
+# ✅ 2. 지역별 그룹화 API
 @app.route('/api/tours/grouped', methods=['GET'])
 def get_grouped_tours():
     target_date = request.args.get('date')
@@ -86,9 +93,10 @@ def get_grouped_tours():
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT t.province, t.city, t.title as parent_title, t.agency, 
-                       s.price_text as price, s.booking_url, s.error_msg, 
-                       t.phone, s.tags, t.main_image_url
+                SELECT 
+                    t.province, t.city, t.title as parent_title, 
+                    t.agency, s.price_text as price, s.booking_url, 
+                    s.error_msg, t.phone, s.tags, t.main_image_url
                 FROM tours t
                 JOIN tour_schedules s ON t.product_code = s.product_code
                 WHERE REPLACE(s.departure_date, '-', '') = %s
@@ -101,46 +109,63 @@ def get_grouped_tours():
             for row in rows:
                 p = row['province'] or "기타"
                 c = row['city'] or "기타"
+                # 텍스트 클리닝
                 row['parent_title'] = clean_html(row['parent_title'])
                 row['tags'] = clean_html(row['tags'])
+                
                 if p not in grouped: grouped[p] = {}
                 if c not in grouped[p]: grouped[p][c] = []
                 grouped[p][c].append(row)
+            
             return jsonify(grouped)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
-# ✅ 3. 공휴일 API (기존 유지)
+# ✅ 3. 공휴일 및 메시지 API
 @app.route('/api/date', methods=['GET'])
 def get_all_special_days():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT h.locdate, h.date_name, h.is_holiday, h.date_kind, m.message FROM holiday_info h LEFT JOIN holiday_messages m ON h.date_name = m.target_name ORDER BY h.locdate ASC"
+            sql = """
+                SELECT h.locdate, h.date_name, h.is_holiday, h.date_kind, m.message
+                FROM holiday_info h
+                LEFT JOIN holiday_messages m ON h.date_name = m.target_name
+                ORDER BY h.locdate ASC
+            """
             cursor.execute(sql)
             results = cursor.fetchall()
-            for row in results: row['message'] = clean_html(row['message'])
+            for row in results:
+                row['message'] = clean_html(row['message'])
             return jsonify(results)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
-# ✅ 4. 프로모션 API (기존 유지)
+# ✅ 4. 프로모션 API
 @app.route('/api/promotions', methods=['GET'])
 def get_promotions():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT icon, title, description, target_url FROM promotions WHERE is_active = 1 ORDER BY priority ASC, id DESC"
+            sql = """
+                SELECT icon, title, description, target_url 
+                FROM promotions 
+                WHERE is_active = 1 
+                ORDER BY priority ASC, id DESC
+            """
             cursor.execute(sql)
             results = cursor.fetchall()
-            for row in results: row['description'] = clean_html(row['description'])
+            for row in results:
+                row['description'] = clean_html(row['description'])
             return jsonify(results)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
-# ✅ 5. 내 주변 소풍지 API (기존 유지)
+# ✅ 5. 내 주변 소풍지 API (구간 필터 적용)
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
     lat = request.args.get('lat', default=37.5665, type=float)
@@ -148,37 +173,54 @@ def get_nearby_spots():
     min_dist = request.args.get('min_radius', default=0.0, type=float)
     max_dist = request.args.get('max_radius', default=10.0, type=float)
     limit = int(request.args.get('limit', 20))
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT P.*, C.overview, (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance 
-                FROM picnic_spots P JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
-                WHERE P.firstimage IS NOT NULL AND P.firstimage != '' AND C.overview IS NOT NULL AND C.overview != ''
-                HAVING distance > %s AND distance <= %s ORDER BY distance ASC LIMIT %s
+                SELECT P.*, C.overview, (
+                    6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) 
+                    * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) 
+                    * sin(radians(P.mapy)))
+                ) AS distance 
+                FROM picnic_spots P
+                JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                WHERE P.firstimage IS NOT NULL AND P.firstimage != ''
+                  AND C.overview IS NOT NULL AND C.overview != ''
+                HAVING distance > %s AND distance <= %s 
+                ORDER BY distance ASC LIMIT %s
             """
-            cursor.execute(sql, [lat, lng, lat, min_dist, max_dist, limit])
+            params = [lat, lng, lat, min_dist, max_dist, limit]
+            cursor.execute(sql, params)
             results = cursor.fetchall()
-            for row in results: row['overview'] = clean_html(row['overview'])
+            for row in results:
+                row['overview'] = clean_html(row['overview'])
             return jsonify(results)
-    except Exception as e: return jsonify({"error": "오류 발생"}), 500
-    finally: conn.close()
+    except Exception as e:
+        print(f"🚨 주변 장소 조회 에러: {e}")
+        return jsonify({"error": "오류 발생"}), 500
+    finally:
+        conn.close()
 
-# ✅ 6. 통합 검색 API (타이틀 클리닝 보완)
+# ✅ 6. 글로벌 통합 검색 API
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
     query = request.args.get('q', '')
     lat = float(request.args.get('lat', 37.5665))
     lng = float(request.args.get('lng', 126.9780))
     if not query: return jsonify({"packages": [], "spots": []})
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql_tours = """
-                SELECT ANY_VALUE(s.title) as title, MIN(s.departure_date) as date, ANY_VALUE(s.price_text) as price, ANY_VALUE(s.booking_url) as booking_url,
-                       ANY_VALUE(t.province) as province, ANY_VALUE(t.city) as city, ANY_VALUE(t.agency) as agency, ANY_VALUE(s.tags) as tags, ANY_VALUE(t.main_image_url) as main_image_url
+                SELECT ANY_VALUE(s.title) as title, MIN(s.departure_date) as date, 
+                       ANY_VALUE(s.price_text) as price, ANY_VALUE(s.booking_url) as booking_url,
+                       ANY_VALUE(t.province) as province, ANY_VALUE(t.city) as city, ANY_VALUE(s.tags) as tags,
+                       ANY_VALUE(t.main_image_url) as main_image_url
                 FROM tour_schedules s JOIN tours t ON s.product_code = t.product_code
-                WHERE (s.title LIKE %s OR t.category LIKE %s) AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
+                WHERE (s.title LIKE %s OR t.category LIKE %s)
+                  AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
                 GROUP BY s.product_code ORDER BY date ASC LIMIT 5
             """
             cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
@@ -193,38 +235,55 @@ def global_search():
             """
             cursor.execute(sql_spots, (lat, lng, lat, f"%{query}%", f"%{query}%"))
             spots = cursor.fetchall()
-            for s in spots: s['title'] = clean_html(s['title']) # 클리닝 추가
-            return jsonify({"packages": packages, "spots": spots})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+            for s in spots: s['title'] = clean_html(s['title'])
 
-# ✅ 7. 장소 상세 API (기존 유지)
+            return jsonify({"packages": packages, "spots": spots})
+    finally:
+        conn.close()
+
+# ✅ 7. 소풍지 상세 정보 API (가장 많은 텍스트 청소 필요)
 @app.route('/api/spots/<int:contentid>', methods=['GET'])
 def get_spot_detail(contentid):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             sql_main = """
-                SELECT P.contentid, P.title, P.addr1, P.addr2, P.mapx, P.mapy, P.firstimage, P.tel, C.overview, D.parking, D.restdate, D.usetime, D.chkbabycarriage
-                FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) LEFT JOIN spot_details D ON CAST(P.contentid AS CHAR) = CAST(D.contentid AS CHAR)
+                SELECT P.contentid, P.title, P.addr1, P.addr2, P.mapx, P.mapy, P.firstimage, P.tel,
+                       C.overview, D.parking, D.restdate, D.usetime, D.chkbabycarriage
+                FROM picnic_spots P
+                LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                LEFT JOIN spot_details D ON CAST(P.contentid AS CHAR) = CAST(D.contentid AS CHAR)
                 WHERE P.contentid = %s
             """
             cursor.execute(sql_main, (contentid,))
             m = cursor.fetchone()
             if not m: return jsonify({"error": "데이터 없음"}), 404
+
             sql_sub = "SELECT infoname, infotext FROM spot_info WHERE CAST(contentid AS CHAR) = %s ORDER BY serialnum ASC"
             cursor.execute(sql_sub, (str(contentid),))
             sub_info = cursor.fetchall()
+
             result = {
-                "basic": {"title": clean_html(m.get('title')), "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(), "lat": m.get('mapy'), "lng": m.get('mapx'), "image": m.get('firstimage', ''), "tel": m.get('tel', ''), "overview": clean_html(m.get('overview')) or "설명 준비 중"},
-                "facility": {"parking": clean_html(m.get('parking')) or "정보 없음", "restdate": clean_html(m.get('restdate')) or "정보 없음", "usetime": clean_html(m.get('usetime')) or "상시 개방", "wheelchair": clean_html(m.get('chkbabycarriage')) or "확인 필요"},
+                "basic": {
+                    "title": clean_html(m.get('title')),
+                    "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(),
+                    "lat": m.get('mapy'), "lng": m.get('mapx'),
+                    "image": m.get('firstimage', ''), "tel": m.get('tel', ''),
+                    "overview": clean_html(m.get('overview')) or "설명 준비 중"
+                },
+                "facility": {
+                    "parking": clean_html(m.get('parking')) or "정보 없음",
+                    "restdate": clean_html(m.get('restdate')) or "정보 없음",
+                    "usetime": clean_html(m.get('usetime')) or "상시 개방",
+                    "wheelchair": clean_html(m.get('chkbabycarriage')) or "확인 필요"
+                },
                 "extra_details": [{"infoname": i['infoname'], "infotext": clean_html(i['infotext'])} for i in sub_info]
             }
             return jsonify(result)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+    finally:
+        conn.close()
 
-# ✅ 8. 축제 정보 API (기존 유지)
+# ✅ 8. 전국 축제 정보 API
 @app.route('/api/festivals', methods=['GET'])
 def get_festivals():
     area_code = request.args.get('areaCode')
@@ -234,7 +293,8 @@ def get_festivals():
         with conn.cursor() as cursor:
             sql = "SELECT F.*, C.overview FROM festivals F LEFT JOIN spot_commons C ON F.contentid = C.contentid WHERE F.eventenddate >= %s"
             params = [today]
-            if area_code: sql += " AND F.areacode = %s"; params.append(area_code)
+            if area_code:
+                sql += " AND F.areacode = %s"; params.append(area_code)
             sql += " ORDER BY F.eventstartdate ASC"
             cursor.execute(sql, params)
             results = cursor.fetchall()
@@ -243,10 +303,10 @@ def get_festivals():
                 start = row['eventstartdate']
                 row['status'] = "진행 중" if start <= today else f"예정 ({start[4:6]}/{start[6:8]} 시작)"
             return jsonify(results)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+    finally:
+        conn.close()
 
-# ✅ 9. 지역별 랜덤 API (기존 유지)
+# ✅ 9. 지역별 랜덤 추천 API
 @app.route('/api/spots/region/random', methods=['GET'])
 def get_random_spots_by_region():
     region = request.args.get('query')
@@ -254,19 +314,18 @@ def get_random_spots_by_region():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            sql = "SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) WHERE P.addr1 LIKE %s AND P.firstimage != '' ORDER BY RAND() LIMIT 20"
+            sql = """
+                SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview
+                FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                WHERE P.addr1 LIKE %s AND P.firstimage != '' ORDER BY RAND() LIMIT 20
+            """
             cursor.execute(sql, (f"{region}%",))
             results = cursor.fetchall()
-            if len(results) < 5:
-                sql_fb = "SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) WHERE P.addr1 LIKE %s ORDER BY RAND() LIMIT 20"
-                cursor.execute(sql_fb, (f"{region}%",))
-                results = cursor.fetchall()
             for row in results:
                 row['overview'] = clean_html(row['overview'])
-                row['title'] = clean_html(row['title'])
             return jsonify(results)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+    finally:
+        conn.close()
 
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
