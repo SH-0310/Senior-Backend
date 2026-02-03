@@ -38,18 +38,18 @@ def sync_data():
 
     try:
         for content_type in TARGET_CONTENT_TYPES:
-            print(f"🚀 카테고리 {content_type} 수집 시작...")
+            print(f"\n🚀 카테고리 {content_type} 수집 시작...")
+            # 시작 페이지 설정
             page = 11 if content_type == 12 else 1
             
             while True:
-                success_page = False  # 해당 페이지 수집 성공 여부
+                success_page = False
                 
-                # --- [키 로테이션 루프] ---
                 while current_key_idx < len(API_ACCOUNTS):
                     acc = API_ACCOUNTS[current_key_idx]
                     params = {
                         'serviceKey': unquote(acc['SERVICE_KEY']),
-                        'numOfRows': 100,
+                        'numOfRows': 1000,  # ✅ 한 번에 1000개씩 요청
                         'pageNo': page,
                         'MobileOS': 'AND',
                         'MobileApp': acc['MOBILE_APP'],
@@ -59,27 +59,30 @@ def sync_data():
                     }
                     
                     try:
-                        # 타임아웃을 넉넉히 30초 설정
                         response = requests.get(BASE_URL, params=params, timeout=30)
                         
-                        # A. 한도 초과 및 비정상 응답 체크 (지난번 배운 로직 적용)
                         if response.status_code != 200 or "LIMITED" in response.text or len(response.text) < 150:
-                            reason = "한도초과 의심" if "LIMITED" in response.text else "비정상 응답"
+                            reason = "한도초과" if "LIMITED" in response.text else "비정상 응답"
                             print(f"⚠️ 계정 [{acc['MOBILE_APP']}] {reason}. 키를 교체합니다.")
                             current_key_idx += 1
-                            continue # 다음 키로 같은 페이지 재시도
+                            continue
                         
-                        # B. 정상 데이터 파싱
                         data = response.json()
                         body = data.get('response', {}).get('body', {})
                         
-                        # 데이터가 없는 경우 (수집 완료)
-                        if not body or 'items' not in body or body['items'] == "":
-                            print(f"✅ {content_type} 카테고리 전체 수집 완료.")
+                        # 전체 데이터 개수 확인
+                        total_count = body.get('totalCount', 0)
+                        if total_count == 0:
+                            success_page = "FINISH"
+                            break
+
+                        if 'items' not in body or body['items'] == "":
                             success_page = "FINISH"
                             break
                         
                         items = body['items']['item']
+                        # 데이터가 단 한 개일 경우 리스트가 아닐 수 있어 리스트로 강제 변환
+                        if isinstance(items, dict): items = [items]
                         
                         # DB 저장 로직
                         with conn.cursor() as cursor:
@@ -96,8 +99,10 @@ def sync_data():
                                     mapx = VALUES(mapx), mapy = VALUES(mapy)
                             """
                             for item in items:
-                                mx = float(item['mapx']) if item.get('mapx') else None
-                                my = float(item['mapy']) if item.get('mapy') else None
+                                # 숫자형 데이터 안전 변환
+                                mx = float(item['mapx']) if item.get('mapx') and item['mapx'] != "" else None
+                                my = float(item['mapy']) if item.get('mapy') and item['mapy'] != "" else None
+                                
                                 cursor.execute(sql, (
                                     item.get('contentid'), item.get('contenttypeid'), item.get('title'),
                                     item.get('addr1', ''), item.get('addr2', ''), item.get('zipcode', ''),
@@ -108,36 +113,37 @@ def sync_data():
                                     item.get('modifiedtime', ''), item.get('lDongRegnCd', ''), item.get('lDongSignguCd', ''),
                                     item.get('lclsSystm1', ''), item.get('lclsSystm2', ''), item.get('lclsSystm3', '')
                                 ))
-                            conn.commit()
+                        conn.commit()
                         
-                        print(f"📦 {page}페이지 저장 완료 (ID: {items[0]['contentid']} 등 {len(items)}개) - Key: {acc['MOBILE_APP']}")
+                        # 진행 상황 출력
+                        current_progress = min(page * 1000, total_count)
+                        percentage = round((current_progress / total_count) * 100, 1) if total_count > 0 else 0
+                        print(f"📦 [Key:{current_key_idx}] {page}페이지 저장 완료 ({current_progress}/{total_count}) - {percentage}%")
+                        
                         success_page = True
-                        break # 성공했으므로 키 로테이션 루프 탈출
-                        
-                    except (json.JSONDecodeError, requests.exceptions.RequestException) as e:
-                        print(f"⚠️ {page}페이지 요청 중 기술적 오류 발생: {e}. 키 교체를 시도합니다.")
+                        break 
+
+                    except Exception as e:
+                        print(f"⚠️ 에러 발생: {e}. 키를 교체합니다.")
                         current_key_idx += 1
                         continue
 
-                # 모든 키를 다 썼다면 종료
                 if current_key_idx >= len(API_ACCOUNTS):
-                    print("🚨 [중단] 모든 API 키를 소진했습니다. 내일 다시 실행하세요.")
+                    print("🚨 [중단] 모든 API 키를 소진했습니다.")
                     return
 
-                # 다음 페이지로 이동 혹은 카테고리 종료
                 if success_page == "FINISH":
+                    print(f"✅ {content_type} 카테고리 전체 수집 완료.")
                     break
                 elif success_page:
                     page += 1
-                    time.sleep(0.3)
+                    time.sleep(0.5)
                 else:
-                    print(f"❌ {page}페이지 수집 실패. 다음 단계로 넘어갑니다.")
                     break
 
-    except Exception as e:
-        print(f"❗ 치명적 오류 발생: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
         print("🏁 수집 프로세스가 종료되었습니다.")
 
 if __name__ == "__main__":

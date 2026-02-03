@@ -269,7 +269,7 @@ def get_spot_detail(contentid):
             cursor.execute(sql_sub, (str(contentid),))
             sub_info = cursor.fetchall()
             result = {
-                "basic": {"title": clean_html(m.get('title')), "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(), "lat": m.get('mapy'), "lng": m.get('mapx'), "image": m.get('firstimage', ''), "tel": m.get('tel', ''), "overview": clean_html(m.get('overview')) or "설명 준비 중"},
+                "basic": {"title": clean_html(m.get('title')), "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(), "lat": m.get('mapy'), "lng": m.get('mapx'), "image": m.get('firstimage', ''), "tel": clean_html(m.get('tel', '')), "overview": clean_html(m.get('overview')) or "설명 준비 중"},
                 "facility": {"parking": clean_html(m.get('parking')) or "정보 없음", "restdate": clean_html(m.get('restdate')) or "정보 없음", "usetime": clean_html(m.get('usetime')) or "상시 개방", "wheelchair": clean_html(m.get('chkbabycarriage')) or "확인 필요"},
                 "extra_details": [{"infoname": i['infoname'], "infotext": clean_html(i['infotext'])} for i in sub_info]
             }
