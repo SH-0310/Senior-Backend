@@ -173,24 +173,15 @@ def get_nearby_spots():
     lat = request.args.get('lat', default=37.5665, type=float)
     lng = request.args.get('lng', default=126.9780, type=float)
     
-    # 앱에서 보낸 필터 값 (5, 10, 20, 50 중 하나)
-    radius_choice = request.args.get('radius', default='10')
+    # ✅ 수정: 앱에서 보낸 min_radius와 max_radius 숫자를 직접 받습니다.
+    # 안드로이드 쿼리 파라미터 이름(min_radius, max_radius)과 일치해야 합니다.
+    min_dist = request.args.get('min_radius', default=0.0, type=float)
+    max_dist = request.args.get('max_radius', default=10.0, type=float)
     limit = int(request.args.get('limit', 20))
-
-    # ✅ 1. 선택된 필터에 따른 구간(Range) 설정
-    if radius_choice == '5':
-        min_dist, max_dist = 0.0, 5.0
-    elif radius_choice == '20':
-        min_dist, max_dist = 10.0, 20.0
-    elif radius_choice == '50':
-        min_dist, max_dist = 20.0, 50.0
-    else: # 기본값 또는 '10' 선택 시
-        min_dist, max_dist = 5.0, 10.0
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # ✅ 2. SQL: 사진/설명이 있고, 특정 거리 구간 내에 있는 장소 조회
             sql = """
                 SELECT P.*, C.overview, (
                     6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) 
@@ -205,12 +196,11 @@ def get_nearby_spots():
                 ORDER BY distance ASC 
                 LIMIT %s
             """
-            # 정해진 구간(min_dist, max_dist)을 쿼리에 주입합니다.
+            # 안드로이드에서 보낸 구간 값이 여기에 정확히 매칭됩니다.
             params = [lat, lng, lat, min_dist, max_dist, limit]
 
             cursor.execute(sql, params)
             results = cursor.fetchall()
-            
             return jsonify(results)
             
     except Exception as e:
