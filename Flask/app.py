@@ -170,53 +170,52 @@ def get_promotions():
 
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
-    lat = request.args.get('lat', type=float)
-    lng = request.args.get('lng', type=float)
+    lat = request.args.get('lat', default=37.5665, type=float)
+    lng = request.args.get('lng', default=126.9780, type=float)
     
-    # ✅ 최소/최대 반경을 받습니다. (예: 5km ~ 10km)
-    min_radius = request.args.get('min_radius', default=0.0, type=float)
-    max_radius = request.args.get('max_radius', default=10.0, type=float)
-    
-    keyword = request.args.get('keyword')
+    # 앱에서 보낸 필터 값 (5, 10, 20, 50 중 하나)
+    radius_choice = request.args.get('radius', default='10')
     limit = int(request.args.get('limit', 20))
+
+    # ✅ 1. 선택된 필터에 따른 구간(Range) 설정
+    if radius_choice == '5':
+        min_dist, max_dist = 0.0, 5.0
+    elif radius_choice == '20':
+        min_dist, max_dist = 10.0, 20.0
+    elif radius_choice == '50':
+        min_dist, max_dist = 20.0, 50.0
+    else: # 기본값 또는 '10' 선택 시
+        min_dist, max_dist = 5.0, 10.0
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. 기본 거리 계산 쿼리
+            # ✅ 2. SQL: 사진/설명이 있고, 특정 거리 구간 내에 있는 장소 조회
             sql = """
-                SELECT *, (
-                    6371 * acos(cos(radians(%s)) * cos(radians(mapy)) 
-                    * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) 
-                    * sin(radians(mapy)))
+                SELECT P.*, C.overview, (
+                    6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) 
+                    * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) 
+                    * sin(radians(P.mapy)))
                 ) AS distance 
-                FROM picnic_spots
+                FROM picnic_spots P
+                JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                WHERE P.firstimage IS NOT NULL AND P.firstimage != ''
+                  AND C.overview IS NOT NULL AND C.overview != ''
+                HAVING distance > %s AND distance <= %s 
+                ORDER BY distance ASC 
+                LIMIT %s
             """
-            params = [lat, lng, lat]
-            where_clauses = []
-
-            # 2. 검색어 처리 (검색어 있을 땐 전국구로 확장)
-            if keyword and keyword.strip():
-                where_clauses.append("(title LIKE %s OR addr1 LIKE %s)")
-                params.extend([f"%{keyword}%", f"%{keyword}%"])
-                # 검색 시에는 구간 제한을 없애는 것이 좋습니다.
-                min_radius = 0.0
-                max_radius = 500.0
-
-            if where_clauses:
-                sql += " WHERE " + " AND ".join(where_clauses)
-
-            # ✅ 3. 명확한 구간 필터링 (min < distance <= max)
-            sql += " HAVING distance > %s AND distance <= %s "
-            params.extend([min_radius, max_radius])
-
-            # 4. 정렬 (가까운 순 혹은 랜덤 선택 가능)
-            sql += " ORDER BY distance ASC LIMIT %s"
-            params.append(limit)
+            # 정해진 구간(min_dist, max_dist)을 쿼리에 주입합니다.
+            params = [lat, lng, lat, min_dist, max_dist, limit]
 
             cursor.execute(sql, params)
             results = cursor.fetchall()
+            
             return jsonify(results)
+            
+    except Exception as e:
+        print(f"🚨 주변 장소 조회 에러: {e}")
+        return jsonify({"error": "주변 정보를 가져오는 중 오류가 발생했습니다."}), 500
     finally:
         conn.close()
 
