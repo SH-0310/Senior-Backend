@@ -164,16 +164,20 @@ def get_nearby_spots():
     except Exception as e: return jsonify({"error": "오류 발생"}), 500
     finally: conn.close()
 
-# ✅ 6. 통합 검색 API (타이틀 클리닝 보완)
+# ✅ 6. 통합 검색 API (이름 우선순위 및 장소 기반 중복 보충형)
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
     query = request.args.get('q', '')
     lat = float(request.args.get('lat', 37.5665))
     lng = float(request.args.get('lng', 126.9780))
-    if not query: return jsonify({"packages": [], "spots": []})
+    
+    if not query: 
+        return jsonify({"packages": [], "spots_by_title": [], "spots_by_addr": []})
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # 1. 여행 패키지 검색 (기존 유지)
             sql_tours = """
                 SELECT ANY_VALUE(s.title) as title, MIN(s.departure_date) as date, ANY_VALUE(s.price_text) as price, ANY_VALUE(s.booking_url) as booking_url,
                        ANY_VALUE(t.province) as province, ANY_VALUE(t.city) as city, ANY_VALUE(t.agency) as agency, ANY_VALUE(s.tags) as tags, ANY_VALUE(t.main_image_url) as main_image_url
@@ -187,16 +191,65 @@ def global_search():
                 p['title'] = clean_html(p['title'])
                 p['tags'] = clean_html(p['tags'])
 
-            sql_spots = """
+            # ✅ 2. 소풍지 (A): 이름 기반 검색 (최대 8개 선정)
+            sql_spots_title = """
                 SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
-                FROM picnic_spots WHERE title LIKE %s OR addr1 LIKE %s ORDER BY distance ASC LIMIT 5
+                FROM picnic_spots 
+                WHERE title LIKE %s 
+                ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
+                LIMIT 8
             """
-            cursor.execute(sql_spots, (lat, lng, lat, f"%{query}%", f"%{query}%"))
-            spots = cursor.fetchall()
-            for s in spots: s['title'] = clean_html(s['title']) # 클리닝 추가
-            return jsonify({"packages": packages, "spots": spots})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+            cursor.execute(sql_spots_title, (lat, lng, lat, f"%{query}%"))
+            spots_title = cursor.fetchall()
+            
+            # 클리닝 및 중복 체크용 ID 리스트 추출
+            title_ids = []
+            for s in spots_title:
+                s['title'] = clean_html(s['title'])
+                title_ids.append(s['contentid'])
+
+            # ✅ 3. 소풍지 (B): 장소 기반 검색 (중복 제외 후 최대 8개 보충)
+            # 이름 기반 검색에서 나온 ID들은 NOT IN으로 제외하여 중복을 원천 차단합니다.
+            if title_ids:
+                # 리스트를 SQL IN 구문에 맞게 변환 (예: '123','456')
+                format_strings = ','.join(['%s'] * len(title_ids))
+                sql_spots_addr = f"""
+                    SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
+                    FROM picnic_spots 
+                    WHERE addr1 LIKE %s 
+                      AND contentid NOT IN ({format_strings})
+                    ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
+                    LIMIT 8
+                """
+                # 파라미터 구성: [좌표, 좌표, 좌표, 검색어, 제외할ID들...]
+                params = [lat, lng, lat, f"%{query}%"] + title_ids
+                cursor.execute(sql_spots_addr, params)
+            else:
+                # 이름 검색 결과가 아예 없을 경우 기존처럼 검색
+                sql_spots_addr = """
+                    SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
+                    FROM picnic_spots 
+                    WHERE addr1 LIKE %s 
+                    ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
+                    LIMIT 8
+                """
+                cursor.execute(sql_spots_addr, (lat, lng, lat, f"%{query}%"))
+            
+            spots_addr = cursor.fetchall()
+            for s in spots_addr: 
+                s['title'] = clean_html(s['title'])
+
+            return jsonify({
+                "packages": packages,
+                "spots_by_title": spots_title,
+                "spots_by_addr": spots_addr
+            })
+
+    except Exception as e:
+        print(f"🚨 통합 검색 에러: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ✅ 7. 장소 상세 API (기존 유지)
 @app.route('/api/spots/<int:contentid>', methods=['GET'])
