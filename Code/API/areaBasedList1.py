@@ -25,7 +25,7 @@ logging.basicConfig(
 
 def get_last_month_str():
     """현재 날짜 기준 2개월 전을 YYYYMM 형식으로 반환 (가장 안정적인 데이터)"""
-    last_month = datetime.now() - relativedelta(months=2)
+    last_month = datetime.now() - relativedelta(months=4)
     return last_month.strftime("%Y%m")
 
 def load_api_config():

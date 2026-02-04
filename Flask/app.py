@@ -191,45 +191,40 @@ def global_search():
                 p['title'] = clean_html(p['title'])
                 p['tags'] = clean_html(p['tags'])
 
-            # ✅ 2. 소풍지 (A): 이름 기반 검색 (최대 8개 선정)
+            # ✅ 2. 소풍지 (A): 이름 기반 검색 (축제 제외: contentTypeId != 15)
             sql_spots_title = """
                 SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                 FROM picnic_spots 
                 WHERE title LIKE %s 
+                  AND contenttypeid != 15  -- ⬅️ 축제/행사 데이터 제외
                 ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                 LIMIT 8
             """
             cursor.execute(sql_spots_title, (lat, lng, lat, f"%{query}%"))
             spots_title = cursor.fetchall()
             
-            # 클리닝 및 중복 체크용 ID 리스트 추출
-            title_ids = []
-            for s in spots_title:
-                s['title'] = clean_html(s['title'])
-                title_ids.append(s['contentid'])
+            title_ids = [s['contentid'] for s in spots_title]
 
-            # ✅ 3. 소풍지 (B): 장소 기반 검색 (중복 제외 후 최대 8개 보충)
-            # 이름 기반 검색에서 나온 ID들은 NOT IN으로 제외하여 중복을 원천 차단합니다.
+            # ✅ 3. 소풍지 (B): 장소 기반 검색 (중복 및 축제 제외)
             if title_ids:
-                # 리스트를 SQL IN 구문에 맞게 변환 (예: '123','456')
                 format_strings = ','.join(['%s'] * len(title_ids))
                 sql_spots_addr = f"""
                     SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                     FROM picnic_spots 
                     WHERE addr1 LIKE %s 
+                      AND contenttypeid != 15
                       AND contentid NOT IN ({format_strings})
                     ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                     LIMIT 8
                 """
-                # 파라미터 구성: [좌표, 좌표, 좌표, 검색어, 제외할ID들...]
                 params = [lat, lng, lat, f"%{query}%"] + title_ids
                 cursor.execute(sql_spots_addr, params)
             else:
-                # 이름 검색 결과가 아예 없을 경우 기존처럼 검색
                 sql_spots_addr = """
                     SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                     FROM picnic_spots 
                     WHERE addr1 LIKE %s 
+                      AND contenttypeid != 15
                     ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                     LIMIT 8
                 """

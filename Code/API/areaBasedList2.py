@@ -34,7 +34,9 @@ def sync_data():
     global current_key_idx
     conn = get_db_connection()
     BASE_URL = "http://apis.data.go.kr/B551011/KorService2/areaBasedList2"
-    TARGET_CONTENT_TYPES = [12, 14, 15]
+    #TARGET_CONTENT_TYPES = [12, 14, 15]
+    #TARGET_CONTENT_TYPES = [25]
+    TARGET_CONTENT_TYPES = [28]
 
     try:
         for content_type in TARGET_CONTENT_TYPES:
