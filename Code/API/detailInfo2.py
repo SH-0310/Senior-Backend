@@ -3,8 +3,9 @@ import pymysql
 from urllib.parse import unquote
 import time
 import json
+import os
 
-# --- [기본 설정 및 DB 연결] ---
+# --- [기본 설정 함수] ---
 def load_api_configs():
     config_path = '/home/ubuntu/Senior/Code/API/api_config.json'
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -21,38 +22,41 @@ def sync_all_info_master():
     API_ACCOUNTS = load_api_configs()
     current_key_idx = 0
     BASE_URL = "http://apis.data.go.kr/B551011/KorService2/detailInfo2"
+    
+    # ✅ 배치 사이즈 조절 (원하시는 만큼 숫자를 키우세요)
+    BATCH_SIZE = 2000 
 
-    while True: # 🔄 무한 루프 시작: 데이터가 없을 때까지 반복
+    while True:
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # 500개씩 끊어서 가져오기 (NOT IN 덕분에 자연스럽게 다음 데이터를 가져옵니다)
-                sql_targets = """
+                # ✅ 대량 수집을 위한 쿼리
+                sql_targets = f"""
                     SELECT contentid, contenttypeid FROM spot_commons
                     WHERE contenttypeid IN (12, 14, 15, 25, 28)
                     AND contentid NOT IN (SELECT DISTINCT contentid FROM spot_info)
-                    LIMIT 500
+                    LIMIT {BATCH_SIZE}
                 """
                 cursor.execute(sql_targets)
                 targets = cursor.fetchall()
 
-            # 🛑 탈출 조건 1: 더 이상 수집할 데이터가 없음
             if not targets:
-                print("✨ 모든 데이터를 수집했습니다! 작업을 종료합니다.")
+                print("✨ [완료] 수집할 새로운 데이터가 더 이상 없습니다!")
                 break
 
-            print(f"🚀 이번 회차: {len(targets)}건의 상세 정보 수집을 시작합니다. (현재 API 키 인덱스: {current_key_idx})")
+            total_targets = len(targets)
+            print(f"\n🚀 {total_targets}건 수집 시작 (현재 API 키 인덱스: {current_key_idx})")
 
-            for row in targets:
-                # 🚨 탈출 조건 2: 모든 API 키 소진 시 즉시 중단
+            for index, row in enumerate(targets, 1):
+                # 모든 키 소진 시 종료
                 if current_key_idx >= len(API_ACCOUNTS):
-                    print("🚨 모든 API 키가 소진되었습니다. 루프를 종료합니다.")
-                    return # 함수 전체 종료
+                    print("\n🚨 [중단] 사용 가능한 모든 API 키를 소진했습니다.")
+                    return
 
                 cid, tid = row['contentid'], row['contenttypeid']
                 item_list = []
 
-                # API 호출 로직
+                # API 키를 바꿔가며 호출
                 while current_key_idx < len(API_ACCOUNTS):
                     acc = API_ACCOUNTS[current_key_idx]
                     params = {
@@ -62,20 +66,24 @@ def sync_all_info_master():
                     }
 
                     try:
-                        res = requests.get(BASE_URL, params=params, timeout=30)
+                        res = requests.get(BASE_URL, params=params, timeout=20)
                         data = res.json()
-                        items_container = data.get('response', {}).get('body', {}).get('items', '')
+                        body = data.get('response', {}).get('body', {})
+                        items_container = body.get('items', '')
                         
                         if items_container and 'item' in items_container:
                             item_list = items_container['item']
                             if isinstance(item_list, dict): item_list = [item_list]
-                        break # 성공 시 while 키 루프 탈출
-                    except:
-                        print(f"⚠️ 키 {acc['MOBILE_APP']} 교체 시도...")
+                        
+                        # 성공 시(데이터가 없어도 응답은 받은 것이므로) 루프 탈출
+                        break 
+                    except Exception:
+                        # 타임아웃이나 한도초과 발생 시 키 교체
+                        print(f"\n⚠️ 키 [{acc['MOBILE_APP']}] 문제 발생. 다음 키로 전환...")
                         current_key_idx += 1
                         continue
 
-                # DB 저장 로직
+                # DB 저장
                 if item_list:
                     with conn.cursor() as cursor:
                         for item in item_list:
@@ -93,13 +101,16 @@ def sync_all_info_master():
                                 item.get('subdetailoverview'), item.get('subdetailimg'), item.get('subdetailalt')
                             ))
                     conn.commit()
-                    # print(f"✅ ID {cid} 저장 완료") # 로그가 너무 많으면 이 줄을 주석처리하세요
 
-                time.sleep(0.1) # 서버 부하 방지
+                # ✅ 진행률 표시 (10건마다 출력)
+                if index % 10 == 0 or index == total_targets:
+                    print(f"\r📦 진행도: {index}/{total_targets} ({round(index/total_targets*100, 1)}%)", end="")
+
+                time.sleep(0.05) # 간격을 약간 줄여 속도 향상
 
         finally:
-            conn.close() # 500개 주기가 끝날 때마다 연결을 닫아 안정성 확보
-            print(f"📦 500개 배치 완료. 다음 배치를 준비합니다...")
+            conn.close()
+            print(f"\n✅ {BATCH_SIZE}개 배치 완료 및 DB 저장 성공. 다음 세션을 시작합니다.")
 
 if __name__ == "__main__":
     sync_all_info_master()
