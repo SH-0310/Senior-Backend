@@ -316,6 +316,31 @@ def get_random_spots_by_region():
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
+@app.route('/api/config/splash', methods=['GET'])
+def get_splash_config():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 활성화된 스플래시 정보를 우선순위 순으로 가져옴
+            sql = """
+                SELECT image_url, message 
+                FROM splash_screens 
+                WHERE is_active = TRUE 
+                ORDER BY priority DESC, id DESC
+            """
+            cursor.execute(sql)
+            results = cursor.fetchall()
+            
+            # 문구 HTML 태그 제거
+            for row in results:
+                row['message'] = clean_html(row['message'])
+                
+            return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
 def health_check():
