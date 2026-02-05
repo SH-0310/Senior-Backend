@@ -341,7 +341,7 @@ def get_splash_config():
     finally:
         conn.close()
 
-# ✅ 10. AI 풍경 컨텐츠 API (리스트 및 상세 조회 통합 - 업그레이드 버전)
+# ✅ 10. AI 풍경 컨텐츠 API (리스트 및 상세 조회 통합 - 최종 업그레이드)
 @app.route('/api/ai-landscapes', methods=['GET'])
 def get_ai_landscapes():
     content_id = request.args.get('id')
@@ -351,7 +351,7 @@ def get_ai_landscapes():
     try:
         with conn.cursor() as cursor:
             if content_id:
-                # 1. 글 정보 가져오기
+                # 1. 상세 조회: SELECT * 이므로 thumbnail_text가 자동으로 포함됩니다.
                 sql_content = "SELECT * FROM ai_landscapes WHERE id = %s"
                 cursor.execute(sql_content, (content_id,))
                 result = cursor.fetchone()
@@ -363,11 +363,8 @@ def get_ai_landscapes():
                     images_rows = cursor.fetchall()
                     image_urls = [row['image_url'] for row in images_rows]
 
-                    # 3. [핵심 업그레이드] 치환자 기반 블록 가공 로직 🚀
+                    # 3. 치환자 기반 블록 가공 로직
                     raw_content = clean_html(result['content'])
-                    
-                    # [[IMG_N]]을 기준으로 텍스트를 쪼갭니다.
-                    # 예: ["도입부", "[[IMG_1]]", "중간글", "[[IMG_2]]", "마무리"]
                     parts = re.split(r'(\[\[IMG_\d+\]\])', raw_content)
                     
                     content_blocks = []
@@ -375,41 +372,45 @@ def get_ai_landscapes():
                         part = part.strip()
                         if not part: continue
                         
-                        # 만약 쪼개진 조각이 [[IMG_n]] 형태라면 사진 블록 추가
                         img_match = re.match(r'\[\[IMG_(\d+)\]\]', part)
                         if img_match:
-                            img_idx = int(img_match.group(1)) - 1 # [[IMG_1]]은 0번 인덱스
+                            img_idx = int(img_match.group(1)) - 1
                             if img_idx < len(image_urls):
                                 content_blocks.append({
                                     "type": "image",
                                     "value": image_urls[img_idx]
                                 })
                         else:
-                            # 그게 아니라면 텍스트 블록 추가
                             content_blocks.append({
                                 "type": "text",
                                 "value": part
                             })
 
-                    # 최종 결과 구성
-                    result['content'] = raw_content # 원본도 혹시 모르니 유지
-                    result['blocks'] = content_blocks # 앱에서 바로 쓸 "황금 리스트"
+                    result['blocks'] = content_blocks
                     result['images'] = image_urls
                     return jsonify(result)
             else:
-                # 리스트 조회 로직 (기존과 동일)
-                sql = "SELECT id, title, thumbnail_url, detail_image_url, card_description, category, author FROM ai_landscapes ORDER BY created_at DESC LIMIT %s"
+                # 4. 리스트 조회: thumbnail_text 컬럼을 추가했습니다! 🚀
+                sql = """
+                    SELECT id, title, thumbnail_text, thumbnail_url, detail_image_url, 
+                           card_description, category, author 
+                    FROM ai_landscapes 
+                    ORDER BY created_at DESC 
+                    LIMIT %s
+                """
                 cursor.execute(sql, (limit,))
                 results = cursor.fetchall()
+                
                 for row in results:
                     row['card_description'] = clean_html(row['card_description'])
+                
                 return jsonify(results)
                 
     except Exception as e:
+        print(f"🚨 API 에러: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
-
 
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
