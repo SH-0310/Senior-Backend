@@ -341,6 +341,53 @@ def get_splash_config():
     finally:
         conn.close()
 
+
+# ✅ 10. AI 풍경 컨텐츠 API (리스트 및 상세 조회 통합)
+@app.route('/api/ai-landscapes', methods=['GET'])
+def get_ai_landscapes():
+    content_id = request.args.get('id') # 상세 조회를 위한 ID
+    limit = request.args.get('limit', default=10, type=int) # 리스트 개수 제한
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            if content_id:
+                # 1. 상세 페이지용 단일 컨텐츠 조회
+                sql = "SELECT * FROM ai_landscapes WHERE id = %s"
+                cursor.execute(sql, (content_id,))
+                result = cursor.fetchone()
+                
+                if result:
+                    # 본문 및 설명 HTML 태그 정화 및 줄바꿈 처리
+                    result['content'] = clean_html(result['content'])
+                    result['card_description'] = clean_html(result['card_description'])
+                    return jsonify(result)
+                else:
+                    return jsonify({"error": "컨텐츠를 찾을 수 없습니다."}), 404
+            else:
+                # 2. 메인 화면 카드용 리스트 조회 (본문 제외하여 가볍게 호출)
+                sql = """
+                    SELECT id, title, thumbnail_url, detail_image_url, 
+                           card_description, category, author 
+                    FROM ai_landscapes 
+                    ORDER BY created_at DESC 
+                    LIMIT %s
+                """
+                cursor.execute(sql, (limit,))
+                results = cursor.fetchall()
+                
+                for row in results:
+                    row['card_description'] = clean_html(row['card_description'])
+                
+                return jsonify(results)
+                
+    except Exception as e:
+        print(f"🚨 AI 컨텐츠 조회 에러: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
 def health_check():
