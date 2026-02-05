@@ -341,48 +341,71 @@ def get_splash_config():
     finally:
         conn.close()
 
-
-# ✅ 10. AI 풍경 컨텐츠 API (리스트 및 상세 조회 통합)
+# ✅ 10. AI 풍경 컨텐츠 API (리스트 및 상세 조회 통합 - 업그레이드 버전)
 @app.route('/api/ai-landscapes', methods=['GET'])
 def get_ai_landscapes():
-    content_id = request.args.get('id') # 상세 조회를 위한 ID
-    limit = request.args.get('limit', default=10, type=int) # 리스트 개수 제한
+    content_id = request.args.get('id')
+    limit = request.args.get('limit', default=10, type=int)
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             if content_id:
-                # 1. 상세 페이지용 단일 컨텐츠 조회
-                sql = "SELECT * FROM ai_landscapes WHERE id = %s"
-                cursor.execute(sql, (content_id,))
+                # 1. 글 정보 가져오기
+                sql_content = "SELECT * FROM ai_landscapes WHERE id = %s"
+                cursor.execute(sql_content, (content_id,))
                 result = cursor.fetchone()
                 
                 if result:
-                    # 본문 및 설명 HTML 태그 정화 및 줄바꿈 처리
-                    result['content'] = clean_html(result['content'])
-                    result['card_description'] = clean_html(result['card_description'])
+                    # 2. 이미지 리스트 가져오기
+                    sql_images = "SELECT image_url FROM ai_landscape_images WHERE landscape_id = %s ORDER BY priority ASC"
+                    cursor.execute(sql_images, (content_id,))
+                    images_rows = cursor.fetchall()
+                    image_urls = [row['image_url'] for row in images_rows]
+
+                    # 3. [핵심 업그레이드] 치환자 기반 블록 가공 로직 🚀
+                    raw_content = clean_html(result['content'])
+                    
+                    # [[IMG_N]]을 기준으로 텍스트를 쪼갭니다.
+                    # 예: ["도입부", "[[IMG_1]]", "중간글", "[[IMG_2]]", "마무리"]
+                    parts = re.split(r'(\[\[IMG_\d+\]\])', raw_content)
+                    
+                    content_blocks = []
+                    for part in parts:
+                        part = part.strip()
+                        if not part: continue
+                        
+                        # 만약 쪼개진 조각이 [[IMG_n]] 형태라면 사진 블록 추가
+                        img_match = re.match(r'\[\[IMG_(\d+)\]\]', part)
+                        if img_match:
+                            img_idx = int(img_match.group(1)) - 1 # [[IMG_1]]은 0번 인덱스
+                            if img_idx < len(image_urls):
+                                content_blocks.append({
+                                    "type": "image",
+                                    "value": image_urls[img_idx]
+                                })
+                        else:
+                            # 그게 아니라면 텍스트 블록 추가
+                            content_blocks.append({
+                                "type": "text",
+                                "value": part
+                            })
+
+                    # 최종 결과 구성
+                    result['content'] = raw_content # 원본도 혹시 모르니 유지
+                    result['blocks'] = content_blocks # 앱에서 바로 쓸 "황금 리스트"
+                    result['images'] = image_urls
                     return jsonify(result)
-                else:
-                    return jsonify({"error": "컨텐츠를 찾을 수 없습니다."}), 404
             else:
-                # 2. 메인 화면 카드용 리스트 조회 (본문 제외하여 가볍게 호출)
-                sql = """
-                    SELECT id, title, thumbnail_url, detail_image_url, 
-                           card_description, category, author 
-                    FROM ai_landscapes 
-                    ORDER BY created_at DESC 
-                    LIMIT %s
-                """
+                # 리스트 조회 로직 (기존과 동일)
+                sql = "SELECT id, title, thumbnail_url, detail_image_url, card_description, category, author FROM ai_landscapes ORDER BY created_at DESC LIMIT %s"
                 cursor.execute(sql, (limit,))
                 results = cursor.fetchall()
-                
                 for row in results:
                     row['card_description'] = clean_html(row['card_description'])
-                
                 return jsonify(results)
                 
     except Exception as e:
-        print(f"🚨 AI 컨텐츠 조회 에러: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
