@@ -1,13 +1,39 @@
 # /home/ubuntu/Senior/Code/app.py
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import pymysql
-from datetime import datetime
+import json
+from datetime import datetime, date
+from decimal import Decimal
 import re
+from werkzeug.middleware.proxy_fix import ProxyFix
+import logging
 
 app = Flask(__name__)
 CORS(app)
 app.json.ensure_ascii = False
+
+# --- [추가된 부분] 로드밸런서 및 실제 IP 로깅 설정 ---
+
+# 1. 로드밸런서의 X-Forwarded-For 헤더 신뢰 설정 (LB 1대 기준)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+
+# 2. 로그 설정 (에러 방지를 위해 표준 포맷 사용)
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+)
+
+# 3. 모든 요청마다 실제 IP를 로그로 남김
+@app.before_request
+def log_request_info():
+    # ProxyFix 덕분에 request.remote_addr에 실제 사용자 IP가 담깁니다.
+    client_ip = request.remote_addr
+    method = request.method
+    path = request.path
+    app.logger.info(f"CONNECTED IP: {client_ip} - {method} {path}")
+
+# --- 설정 끝 ---
 
 # --- 공통 도우미 함수 ---
 def get_db_connection():
