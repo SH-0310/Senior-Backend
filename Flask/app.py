@@ -438,6 +438,42 @@ def get_ai_landscapes():
     finally:
         conn.close()
 
+# ✅ 11. 지역별 날씨 예보 API (최신 10일치)
+@app.route('/api/weather', methods=['GET'])
+def get_weather():
+    location = request.args.get('location')
+    
+    if not location:
+        return jsonify({"error": "지역(location) 정보가 필요합니다."}), 400
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 특정 지역의 오늘 이후 예보를 날짜순, 오전/오후순으로 정렬하여 가져옴
+            sql = """
+                SELECT location, forecast_date, ampm, weather_status, rainfall_prob, temp_value
+                FROM weather_forecasts
+                WHERE location = %s 
+                  AND forecast_date >= CURDATE()
+                ORDER BY forecast_date ASC, ampm ASC
+                LIMIT 20
+            """
+            cursor.execute(sql, (location,))
+            results = cursor.fetchall()
+
+            # 날짜 형식 변환 (date -> string)
+            for row in results:
+                if isinstance(row['forecast_date'], (date, datetime)):
+                    row['forecast_date'] = row['forecast_date'].strftime('%Y-%m-%d')
+
+            return jsonify(results)
+            
+    except Exception as e:
+        app.logger.error(f"🚨 날씨 API 에러: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
 def health_check():
