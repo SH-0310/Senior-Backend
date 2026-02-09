@@ -438,30 +438,23 @@ def get_ai_landscapes():
     finally:
         conn.close()
 
-# ✅ 11. 지역별 날씨 예보 API (최신 10일치)
-@app.route('/api/weather', methods=['GET'])
-def get_weather():
-    location = request.args.get('location')
-    
-    if not location:
-        return jsonify({"error": "지역(location) 정보가 필요합니다."}), 400
-
+# ✅ 11. 전체 지역 날씨 예보 API (전체 데이터 출력)
+@app.route('/api/weather/all', methods=['GET'])
+def get_all_weather():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 특정 지역의 오늘 이후 예보를 날짜순, 오전/오후순으로 정렬하여 가져옴
+            # 모든 지역의 오늘 이후 데이터를 날짜/오전오후 순으로 정렬
             sql = """
-                SELECT location, forecast_date, ampm, weather_status, rainfall_prob, temp_value
+                SELECT location, forecast_date, ampm, weather_status
                 FROM weather_forecasts
-                WHERE location = %s 
-                  AND forecast_date >= CURDATE()
-                ORDER BY forecast_date ASC, ampm ASC
-                LIMIT 20
+                WHERE forecast_date >= CURDATE()
+                ORDER BY location ASC, forecast_date ASC, ampm ASC
             """
-            cursor.execute(sql, (location,))
+            cursor.execute(sql)
             results = cursor.fetchall()
 
-            # 날짜 형식 변환 (date -> string)
+            # 날짜 객체를 JSON 전송이 가능한 문자열로 변환
             for row in results:
                 if isinstance(row['forecast_date'], (date, datetime)):
                     row['forecast_date'] = row['forecast_date'].strftime('%Y-%m-%d')
@@ -469,7 +462,7 @@ def get_weather():
             return jsonify(results)
             
     except Exception as e:
-        app.logger.error(f"🚨 날씨 API 에러: {e}")
+        app.logger.error(f"🚨 전체 날씨 API 에러: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
