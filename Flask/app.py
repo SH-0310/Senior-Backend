@@ -190,71 +190,77 @@ def get_nearby_spots():
     except Exception as e: return jsonify({"error": "오류 발생"}), 500
     finally: conn.close()
 
-# ✅ 6. 통합 검색 API (이름 우선순위 및 장소 기반 중복 보충형)
+# ✅ 6. 통합 검색 API (띄어쓰기 무시 및 중복 보충형)
 @app.route('/api/search/global', methods=['GET'])
 def global_search():
-    query = request.args.get('q', '')
+    # 1. 검색어 전처리: 앞뒤 공백 제거 및 모든 공백 제거 버전 생성
+    query = request.args.get('q', '').strip()
     lat = float(request.args.get('lat', 37.5665))
     lng = float(request.args.get('lng', 126.9780))
     
     if not query: 
         return jsonify({"packages": [], "spots_by_title": [], "spots_by_addr": []})
 
+    # 공백을 제거한 검색어 (예: "대관령 양떼" -> "대관령양떼")
+    clean_query = query.replace(" ", "")
+    search_param = f"%{clean_query}%"
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # 1. 여행 패키지 검색 (기존 유지)
+            # 🚀 [1] 여행 패키지 검색: 제목과 카테고리에서 공백 제거 후 비교
             sql_tours = """
                 SELECT ANY_VALUE(s.title) as title, MIN(s.departure_date) as date, ANY_VALUE(s.price_text) as price, ANY_VALUE(s.booking_url) as booking_url,
                        ANY_VALUE(t.province) as province, ANY_VALUE(t.city) as city, ANY_VALUE(t.agency) as agency, ANY_VALUE(s.tags) as tags, ANY_VALUE(t.main_image_url) as main_image_url
                 FROM tour_schedules s JOIN tours t ON s.product_code = t.product_code
-                WHERE (s.title LIKE %s OR t.category LIKE %s) AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
+                WHERE (REPLACE(s.title, ' ', '') LIKE %s OR REPLACE(t.category, ' ', '') LIKE %s) 
+                  AND REPLACE(s.departure_date, '-', '') >= DATE_FORMAT(CURDATE(), '%%Y%%m%%d')
                 GROUP BY s.product_code ORDER BY date ASC LIMIT 5
             """
-            cursor.execute(sql_tours, (f"%{query}%", f"%{query}%"))
+            cursor.execute(sql_tours, (search_param, search_param))
             packages = cursor.fetchall()
             for p in packages:
                 p['title'] = clean_html(p['title'])
                 p['tags'] = clean_html(p['tags'])
 
-            # ✅ 2. 소풍지 (A): 이름 기반 검색 (축제 제외: contentTypeId != 15)
+            # 🚀 [2] 소풍지 (A): 이름 기반 검색 (공백 제거 적용)
             sql_spots_title = """
                 SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                 FROM picnic_spots 
-                WHERE title LIKE %s 
-                  AND contenttypeid != 15  -- ⬅️ 축제/행사 데이터 제외
+                WHERE REPLACE(title, ' ', '') LIKE %s 
+                  AND contenttypeid != 15
                 ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                 LIMIT 8
             """
-            cursor.execute(sql_spots_title, (lat, lng, lat, f"%{query}%"))
+            cursor.execute(sql_spots_title, (lat, lng, lat, search_param))
             spots_title = cursor.fetchall()
             
             title_ids = [s['contentid'] for s in spots_title]
 
-            # ✅ 3. 소풍지 (B): 장소 기반 검색 (중복 및 축제 제외)
+            # 🚀 [3] 소풍지 (B): 장소(주소) 기반 검색 (공백 제거 및 중복 제외)
             if title_ids:
                 format_strings = ','.join(['%s'] * len(title_ids))
                 sql_spots_addr = f"""
                     SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                     FROM picnic_spots 
-                    WHERE addr1 LIKE %s 
+                    WHERE REPLACE(addr1, ' ', '') LIKE %s 
                       AND contenttypeid != 15
                       AND contentid NOT IN ({format_strings})
                     ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                     LIMIT 8
                 """
-                params = [lat, lng, lat, f"%{query}%"] + title_ids
+                params = [lat, lng, lat, search_param] + title_ids
                 cursor.execute(sql_spots_addr, params)
             else:
                 sql_spots_addr = """
                     SELECT *, (6371 * acos(cos(radians(%s)) * cos(radians(mapy)) * cos(radians(mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(mapy)))) AS distance 
                     FROM picnic_spots 
-                    WHERE addr1 LIKE %s 
+                    WHERE REPLACE(addr1, ' ', '') LIKE %s 
                       AND contenttypeid != 15
                     ORDER BY (firstimage IS NOT NULL AND firstimage != '') DESC, RAND() 
                     LIMIT 8
                 """
-                cursor.execute(sql_spots_addr, (lat, lng, lat, f"%{query}%"))
+                cursor.execute(sql_spots_addr, (lat, lng, lat, search_param))
             
             spots_addr = cursor.fetchall()
             for s in spots_addr: 
@@ -298,6 +304,7 @@ def get_spot_detail(contentid):
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
+
 # ✅ 8. 축제 정보 API (기존 유지)
 @app.route('/api/festivals', methods=['GET'])
 def get_festivals():
@@ -320,27 +327,7 @@ def get_festivals():
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
-# ✅ 9. 지역별 랜덤 API (기존 유지)
-@app.route('/api/spots/region/random', methods=['GET'])
-def get_random_spots_by_region():
-    region = request.args.get('query')
-    if not region: return jsonify({"error": "지역 정보 필요"}), 400
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            sql = "SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) WHERE P.addr1 LIKE %s AND P.firstimage != '' ORDER BY RAND() LIMIT 20"
-            cursor.execute(sql, (f"{region}%",))
-            results = cursor.fetchall()
-            if len(results) < 5:
-                sql_fb = "SELECT P.contentid, P.title, P.addr1, P.firstimage, P.mapx, P.mapy, C.overview FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) WHERE P.addr1 LIKE %s ORDER BY RAND() LIMIT 20"
-                cursor.execute(sql_fb, (f"{region}%",))
-                results = cursor.fetchall()
-            for row in results:
-                row['overview'] = clean_html(row['overview'])
-                row['title'] = clean_html(row['title'])
-            return jsonify(results)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-    finally: conn.close()
+
 
 @app.route('/api/config/splash', methods=['GET'])
 def get_splash_config():

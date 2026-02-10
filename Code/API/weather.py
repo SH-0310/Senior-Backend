@@ -9,24 +9,54 @@ from datetime import datetime, timedelta
 SERVICE_KEY = "eb08c1ad2a7c050ba576b0d3669ecb5d82c5484660c0ec6df85fae3b563a1c2a"
 CSV_PATH = "/home/ubuntu/Senior/Code/API/weather_coords.csv" 
 
-# 모든 중기예보 구역 코드를 포함한 통합 매핑 표
+# 모든 중기예보 구역 코드를 포함한 최종 통합 매핑 표
 MID_TERM_REG_MAP = {
-    # 수도권 (서울, 인천, 경기)
+    # 수도권 (서울, 인천, 경기) - 11B00000
     "서울": "11B00000", "인천": "11B00000", "경기": "11B00000", "수도권": "11B00000",
-    # 강원권 (영서/영동 분리 필수)
-    "강릉": "11D20000", "속초": "11D20000", "양양": "11D20000", "고성": "11D20000", "동해": "11D20000", "삼척": "11D20000",
-    "춘천": "11D10000", "원주": "11D10000", "철원": "11D10000", "횡성": "11D10000", "홍천": "11D10000", "평창": "11D10000",
-    # 충청권
-    "대전": "11C20000", "세종": "11C20000", "충남": "11C20000", "천안": "11C20000", "보령": "11C20000", "부여": "11C20000",
-    "청주": "11C10000", "충북": "11C10000", "제천": "11C10000", "충주": "11C10000",
-    # 호남권
-    "광주": "11F20000", "전남": "11F20000", "여수": "11F20000", "순천": "11F20000", "목포": "11F20000", "광양": "11F20000", "신안": "11F20000",
-    "전주": "11F10000", "전북": "11F10000", "군산": "11F10000", "무주": "11F10000", "익산": "11F10000",
-    # 영남권
-    "대구": "11H10000", "경북": "11H10000", "안동": "11H10000", "포항": "11H10000", "영주": "11H10000",
-    "부산": "11H20000", "울산": "11H20000", "경남": "11H20000", "창원": "11H20000", "거제": "11H20000", "통영": "11H20000", "남해": "11H20000",
-    # 제주권
-    "제주": "11G00000"
+    "수원": "11B00000", "안산": "11B00000", "오산": "11B00000", "포천": "11B00000", 
+    "부천": "11B00000", "평택": "11B00000", "파주": "11B00000", "김포": "11B00000",
+
+    # 강원권 영서 (서쪽) - 11D10000
+    "춘천": "11D10000", "원주": "11D10000", "철원": "11D10000", "횡성": "11D10000", 
+    "홍천": "11D10000", "평창": "11D10000", "영월": "11D10000", "정선": "11D10000", 
+    "인제": "11D10000", "화천": "11D10000", "양구": "11D10000",
+
+    # 강원권 영동 (동쪽/해안) - 11D20000
+    "강릉": "11D20000", "속초": "11D20000", "양양": "11D20000", "고성": "11D20000", 
+    "동해": "11D20000", "삼척": "11D20000", "태백": "11D20000",
+
+    # 충청남도 (대전, 세종 포함) - 11C20000
+    "대전": "11C20000", "세종": "11C20000", "충남": "11C20000", "천안": "11C20000", 
+    "보령": "11C20000", "부여": "11C20000", "태안": "11C20000", "서산": "11C20000", 
+    "논산": "11C20000", "공주": "11C20000", "예산": "11C20000", "홍성": "11C20000", 
+    "당진": "11C20000", "서천": "11C20000", "금산": "11C20000", "아산": "11C20000",
+
+    # 충청북도 - 11C10000
+    "청주": "11C10000", "충북": "11C10000", "제천": "11C10000", "충주": "11C10000", 
+    "단양": "11C10000", "음성": "11C10000", "진천": "11C10000", "괴산": "11C10000",
+
+    # 전라남도 (광주 포함) - 11F20000
+    "광주": "11F20000", "전남": "11F20000", "여수": "11F20000", "순천": "11F20000", 
+    "목포": "11F20000", "광양": "11F20000", "신안": "11F20000", "구례": "11F20000", 
+    "담양": "11F20000", "나주": "11F20000", "곡성": "11F20000", "보성": "11F20000",
+
+    # 전북특별자치도 - 11F10000
+    "전주": "11F10000", "전북": "11F10000", "군산": "11F10000", "무주": "11F10000", 
+    "익산": "11F10000", "남원": "11F10000", "정읍": "11F10000", "부안": "11F10000", 
+    "순창": "11F10000", "김제": "11F10000", "완주": "11F10000", "진안": "11F10000",
+
+    # 경상북도 (대구 포함) - 11H10000
+    "대구": "11H10000", "경북": "11H10000", "안동": "11H10000", "포항": "11H10000", 
+    "영주": "11H10000", "봉화": "11H10000", "문경": "11H10000", "예천": "11H10000", 
+    "청송": "11H10000", "경주": "11H10000", "구미": "11H10000", "상주": "11H10000", "울진": "11H10000",
+
+    # 경상남도 (부산, 울산 포함) - 11H20000
+    "부산": "11H20000", "울산": "11H20000", "경남": "11H20000", "창원": "11H20000", 
+    "진해": "11H20000", "하동": "11H20000", "창녕": "11H20000", "거제": "11H20000", 
+    "통영": "11H20000", "남해": "11H20000", "고성": "11H20000", "진주": "11H20000",
+
+    # 제주권 - 11G00000
+    "제주": "11G00000", "서귀포": "11G00000"
 }
 
 
@@ -40,15 +70,17 @@ def get_db_connection():
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 def fetch_mid_term_weather(city):
-    """중기육상예보(4~10일) API 호출 및 저장"""
-    # 1. regId 매핑
+    """중기육상예보(4~10일) API 호출 및 저장 (로그 강화 버전)"""
+    # 1. regId 매핑 확인
     reg_id = next((code for name, code in MID_TERM_REG_MAP.items() if name in city), None)
-    if not reg_id: return
+    if not reg_id:
+        logging.warning(f"⚠️ [중기예보] {city}: 매핑된 regId가 없습니다. 수집을 건너뜁니다.")
+        return
 
     url = "http://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst"
     now = datetime.now()
     
-    # 2. 발표시각(tmFc) 계산: 06시, 18시 기준
+    # 2. 발표시각(tmFc) 계산
     if now.hour < 6:
         base_dt = (now - timedelta(days=1)).strftime("%Y%m%d") + "1800"
     elif now.hour < 18:
@@ -63,14 +95,36 @@ def fetch_mid_term_weather(city):
         'tmFc': base_dt
     }
 
+    logging.info(f"📡 [중기예보] {city} 요청 시작 (regId: {reg_id}, tmFc: {base_dt})")
+
     try:
-        res = requests.get(url, params=params, timeout=30).json()
-        item = res['response']['body']['items']['item'][0]
+        response = requests.get(url, params=params, timeout=30)
+        
+        # 응답 상태 확인
+        if response.status_code != 200:
+            logging.error(f"❌ [중기예보] {city}: API 연결 실패 (HTTP {response.status_code})")
+            return
+
+        res = response.json()
+        header = res.get('response', {}).get('header', {})
+        
+        if header.get('resultCode') != '00':
+            logging.error(f"❌ [중기예보] {city}: API 에러 (코드: {header.get('resultCode')}, 메시지: {header.get('resultMsg')})")
+            return
+
+        body = res.get('response', {}).get('body', {})
+        if not body or 'items' not in body or not body['items']['item']:
+            logging.warning(f"⚠️ [중기예보] {city}: 응답 데이터가 비어있습니다. (NO_DATA)")
+            return
+
+        item = body['items']['item'][0]
         
         conn = get_db_connection()
+        save_count = 0
         with conn.cursor() as cursor:
             # 3일(또는 4일)부터 10일까지 순회하며 저장
-            start_day = 4 if base_dt.endswith("0600") else 5
+            # 기상청 데이터 특성상 06시 발표는 3일후 오후(wf3Pm)부터 데이터가 실질적으로 유효함
+            start_day = 3
             for i in range(start_day, 11):
                 fcst_date = (datetime.strptime(base_dt[:8], "%Y%m%d") + timedelta(days=i)).strftime("%Y%m%d")
                 
@@ -80,7 +134,7 @@ def fetch_mid_term_weather(city):
                     wf_key = f'wf{i}{t}'
                     if wf_key in item:
                         weather_text = item[wf_key]
-                        ampm = t.upper() if t else 'AM' # 8일 이후는 AM으로 통합 저장하거나 별도 처리
+                        ampm = t.upper() if t else 'AM'
                         
                         sql = """
                             INSERT INTO weather_forecasts (location, forecast_date, ampm, weather_status)
@@ -88,10 +142,15 @@ def fetch_mid_term_weather(city):
                             ON DUPLICATE KEY UPDATE weather_status = %s, collected_at = NOW()
                         """
                         cursor.execute(sql, (city, fcst_date, ampm, weather_text, weather_text))
+                        save_count += 1
+                    else:
+                        logging.debug(f"🔍 [중기예보] {city}: {wf_key} 필드 없음")
+
             conn.commit()
-            logging.info(f"📅 {city} 중기예보 저장 완료 (기준구역: {reg_id})")
+            logging.info(f"💾 [중기예보] {city}: {save_count}건의 예보 저장 완료.")
+
     except Exception as e:
-        logging.error(f"❌ {city} 중기예보 실패: {e}")
+        logging.error(f"❌ [중기예보] {city}: 수집 중 예외 발생: {e}")
     finally:
         if 'conn' in locals(): conn.close()
 
