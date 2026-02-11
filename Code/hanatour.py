@@ -24,6 +24,7 @@ logging.basicConfig(
 )
 
 def get_automated_cookies():
+    logging.info("🌐 셀레니움을 이용해 쿠키 획득을 시작합니다...")
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -34,9 +35,18 @@ def get_automated_cookies():
     try:
         driver = webdriver.Chrome(service=service, options=options)
         driver.get("https://www.hanatour.com/package/major-products?pkgServiceCd=DP&trvlDayCnt=1")
+        logging.info("⌛ 페이지 로딩 대기 중 (7초)...")
         time.sleep(7)
         cookies = driver.get_cookies()
-        return "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+        if not cookies:
+            logging.error("❌ 쿠키 획득 실패: 브라우저에서 쿠키를 가져오지 못했습니다.")
+            return None
+        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+        logging.info(f"✅ 쿠키 획득 성공 (길이: {len(cookie_str)})")
+        return cookie_str
+    except Exception as e:
+        logging.error(f"❌ 셀레니움 오류: {e}")
+        return None
     finally:
         driver.quit()
 
@@ -71,6 +81,9 @@ def fetch_sale_products_by_day(rprs_code, dep_day, cookie):
     results = []
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code != 200:
+            logging.warning(f"  └ ⚠️ 상세 API 응답 이상 (HTTP {res.status_code}) - 날짜: {dep_day}")
+            return []
         products = res.json().get('data', {}).get('products', [])
         for p in products:
             sale_cd = p.get('saleProdCd')
@@ -89,16 +102,38 @@ def fetch_sale_products_by_day(rprs_code, dep_day, cookie):
 
 def fetch_calendar(rprs_code, month_str, cookie):
     url = "https://gw.hanatour.com/front/package/calendar/departure-dates?_siteId=hanatour"
-    headers = {"Content-Type": "application/json", "Cookie": cookie, "Referer": "https://www.hanatour.com/"}
+    # ✅ [수정] 메인 리스트 호출 시 성공했던 헤더와 동일하게 맞춤
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": cookie,
+        "Referer": f"https://www.hanatour.com/package/major-products",
+        "Origin": "https://www.hanatour.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*"
+    }
+    
     payload = {
-        "header": {"timestamp": datetime.now().strftime("%Y%m%d%H%M%S"), "lang": "ko", "pathCd": "DCP", "siteId": "hanatour"},
-        "domain": "https://www.hanatour.com", "rprsProdCds": rprs_code, "depDay": month_str, 
-        "areaCd": "AK", "pkgServiceCd": "DP", "trvlDayCnt": "1", "os": "pc", "scods": "B1,B2,B3,B4,B5,B6,B7,B8,A8,A9"
+        "header": {
+            "timestamp": datetime.now().strftime("%Y%m%d%H%M%S"), 
+            "lang": "ko", 
+            "pathCd": "DCP", 
+            "siteId": "hanatour"
+        },
+        "domain": "https://www.hanatour.com", 
+        "rprsProdCds": rprs_code, 
+        "depDay": month_str, 
+        "areaCd": "AK", 
+        "pkgServiceCd": "DP", 
+        "trvlDayCnt": "1", 
+        "os": "pc", 
+        "scods": "B1,B2,B3,B4,B5,B6,B7,B8,A8,A9"
     }
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         return res.json().get('data', {}).get(month_str, [])
-    except: return []
+    except Exception as e:
+        logging.error(f"  └ ❌ 달력 데이터 API 오류 ({month_str}): {e}")
+        return []
 
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -112,19 +147,48 @@ def run_collection():
     
     stats = {"total_rprs": 0, "saved_schedules": 0, "failed_codes": 0, "deleted_tours": 0}
     cookie = get_automated_cookies()
-    if not cookie: return
+    if not cookie: 
+        logging.error("❌ 쿠키를 가져오지 못했습니다.")
+        return
 
     main_url = "https://gw.hanatour.com/front/package/major-products?_siteId=hanatour"
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": cookie,
+        "Referer": "https://www.hanatour.com/package/major-products?pkgServiceCd=DP&trvlDayCnt=1",
+        "Origin": "https://www.hanatour.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "accept": "application/json, text/plain, */*"
+    }
+
     main_payload = {
-        "header": {"timestamp": datetime.now().strftime("%Y%m%d%H%M%S"), "lang": "ko"},
+        "header": {"timestamp": datetime.now().strftime("%Y%m%d%H%M%S"), "lang": "ko", "pathCd": "DCP", "siteId": "hanatour"},
         "domain": "https://www.hanatour.com", "areaCd": "AK", "pkgServiceCd": "DP", "trvlDayCnt": "1",
         "pageSize": 100, "sort": "RPRS_SORT2", "strtDepDay": datetime.now().strftime("%Y%m%d"), "os": "pc"
     }
 
     try:
-        response = requests.post(main_url, json=main_payload, headers={"Content-Type": "application/json", "Cookie": cookie})
-        products = response.json().get('data', {}).get('products', [])
+        # ✅ [수정] 헤더 적용 및 응답 상태 체크
+        response = requests.post(main_url, json=main_payload, headers=headers, timeout=15)
         
+        if response.status_code != 200:
+            logging.error(f"❌ API 호출 실패 (Status: {response.status_code})")
+            logging.error(f"응답 내용 요약: {response.text[:200]}") # 에러 원인 파악용
+            return
+
+        # ✅ JSON 파싱 에러 방지
+        try:
+            res_json = response.json()
+        except Exception as json_err:
+            logging.error(f"❌ JSON 파싱 에러: {json_err}")
+            return
+        
+        # ✅ 이미 파싱된 res_json 객체를 사용하세요.
+        products = res_json.get('data', {}).get('products', [])
+        
+        if not products:
+            logging.warning("⚠️ 수집된 상품이 없습니다. (API 응답은 정상이나 데이터가 비어있음)")
+
         conn = get_db_connection()
         conn.autocommit(True) 
         
@@ -132,11 +196,13 @@ def run_collection():
         one_month_later = now_dt + relativedelta(months=1)
         today_str, limit_day_str = now_dt.strftime("%Y%m%d"), one_month_later.strftime("%Y%m%d")
 
+        logging.info(f"📅 분석 범위: {today_str} ~ {limit_day_str}")
+
         with conn.cursor() as cursor:
-            for p in products:
+            for idx, p in enumerate(products, 1):
                 rprs_code = p.get('rprsProdCd')
                 title = p.get('rprsProdNm')
-
+                logging.info(f"🔍 [{idx}/{len(products)}] 상품 분석 중: {title} ({rprs_code})")
 
                 # ✅ 분석된 하나투어 이미지 주소 체계 적용
                 # JSON의 'rprsProdCntntUrlAdrs' 필드에서 상대 경로를 가져옵니다.
