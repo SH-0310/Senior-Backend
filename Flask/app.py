@@ -166,29 +166,44 @@ def get_promotions():
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
-# ✅ 5. 내 주변 소풍지 API (기존 유지)
+# /api/spots/nearby 엔드포인트 수정
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
     lat = request.args.get('lat', default=37.5665, type=float)
     lng = request.args.get('lng', default=126.9780, type=float)
     min_dist = request.args.get('min_radius', default=0.0, type=float)
     max_dist = request.args.get('max_radius', default=10.0, type=float)
+    
+    # ✅ 페이지네이션을 위한 파라미터 추가
     limit = int(request.args.get('limit', 20))
+    offset = int(request.args.get('offset', 0)) # 몇 번째 데이터부터 가져올지 결정
+    
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # ✅ SQL에 OFFSET %s 추가
             sql = """
-                SELECT P.*, C.overview, (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance 
-                FROM picnic_spots P JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
-                WHERE P.firstimage IS NOT NULL AND P.firstimage != '' AND C.overview IS NOT NULL AND C.overview != ''
-                HAVING distance > %s AND distance <= %s ORDER BY distance ASC LIMIT %s
+                SELECT P.*, C.overview, 
+                       (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance 
+                FROM picnic_spots P 
+                JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
+                WHERE P.firstimage IS NOT NULL AND P.firstimage != '' 
+                  AND C.overview IS NOT NULL AND C.overview != ''
+                HAVING distance > %s AND distance <= %s 
+                ORDER BY distance ASC 
+                LIMIT %s OFFSET %s
             """
-            cursor.execute(sql, [lat, lng, lat, min_dist, max_dist, limit])
+            # ✅ 파라미터 리스트에 offset 추가
+            cursor.execute(sql, [lat, lng, lat, min_dist, max_dist, limit, offset])
             results = cursor.fetchall()
-            for row in results: row['overview'] = clean_html(row['overview'])
+            
+            for row in results: 
+                row['overview'] = clean_html(row['overview'])
             return jsonify(results)
-    except Exception as e: return jsonify({"error": "오류 발생"}), 500
-    finally: conn.close()
+    except Exception as e: 
+        return jsonify({"error": str(e)}), 500
+    finally: 
+        conn.close()
 
 # ✅ 6. 통합 검색 API (띄어쓰기 무시 및 중복 보충형)
 @app.route('/api/search/global', methods=['GET'])
