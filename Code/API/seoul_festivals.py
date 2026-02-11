@@ -36,7 +36,7 @@ def sync_seoul_culture_data():
     cursor = conn.cursor()
 
     try:
-        # 1. 전체 데이터 개수 파악하기
+        # 1. 전체 데이터 개수 파악
         base_url = f"http://openapi.seoul.go.kr:8088/{API_KEY}/xml/culturalEventInfo/1/1/"
         response = requests.get(base_url)
         root = ET.fromstring(response.text)
@@ -44,7 +44,6 @@ def sync_seoul_culture_data():
         
         print(f"📅 [수집 시작] 총 {total_count}건의 데이터를 확인했습니다.")
 
-        # 2. 1000건씩 끊어서 전체 데이터 수집 (페이지네이션)
         for start in range(1, total_count + 1, 1000):
             end = start + 999
             url = f"http://openapi.seoul.go.kr:8088/{API_KEY}/xml/culturalEventInfo/{start}/{end}/"
@@ -56,45 +55,61 @@ def sync_seoul_culture_data():
                 hmpg_addr = row.findtext('HMPG_ADDR')
                 cult_code = get_cult_code(hmpg_addr)
                 
-                # 날짜 전처리
-                raw_start = row.findtext('STRTDATE')
-                start_date = raw_start.split(' ')[0] if raw_start else None
-                raw_end = row.findtext('END_DATE')
-                end_date = raw_end.split(' ')[0] if raw_end else None
+                # 날짜 전처리 (YYYY-MM-DD 형식 추출)
+                def clean_date(d): return d.split(' ')[0] if d else None
+                
+                start_date = clean_date(row.findtext('STRTDATE'))
+                end_date = clean_date(row.findtext('END_DATE'))
+                rgst_date = clean_date(row.findtext('RGSTDATE'))
 
-                # DB 저장 (중복 시 업데이트 - ON DUPLICATE KEY UPDATE)
+                # 2. 모든 필드를 포함한 SQL 쿼리
                 sql = """
                     INSERT INTO seoul_events (
                         cult_code, title, codename, guname, date_range, place, 
-                        use_target, use_fee, is_free, main_img, hmpg_url, lat, lng, start_date, end_date
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        org_name, use_target, use_fee, inquiry, player, program, 
+                        etc_desc, is_free, main_img, hmpg_url, org_link, lat, lng, 
+                        start_date, end_date, rgstdate, ticket, themecode, pro_time
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, 
+                        %s, %s, %s, %s, %s, %s, 
+                        %s, %s, %s, %s, %s, %s, %s, 
+                        %s, %s, %s, %s, %s, %s
+                    )
                     ON DUPLICATE KEY UPDATE
                         title=VALUES(title),
                         date_range=VALUES(date_range),
                         place=VALUES(place),
                         use_fee=VALUES(use_fee),
+                        inquiry=VALUES(inquiry),
+                        player=VALUES(player),
+                        program=VALUES(program),
                         main_img=VALUES(main_img),
-                        end_date=VALUES(end_date)
+                        hmpg_url=VALUES(hmpg_url),
+                        end_date=VALUES(end_date),
+                        pro_time=VALUES(pro_time)
                 """
                 
-                # ✅ safe_float 함수를 사용하여 LAT/LOT 값을 안전하게 추출
+                # 위도/경도 안전 변환
                 lat_val = safe_float(row.findtext('LAT'))
                 lng_val = safe_float(row.findtext('LOT'))
                 
+                # 3. 데이터 매핑 (API 순서에 맞춤)
                 params = (
                     cult_code, row.findtext('TITLE'), row.findtext('CODENAME'), 
                     row.findtext('GUNAME'), row.findtext('DATE'), row.findtext('PLACE'),
-                    row.findtext('USE_TRGT'), row.findtext('USE_FEE'), row.findtext('IS_FREE'),
-                    row.findtext('MAIN_IMG'), hmpg_addr, 
-                    lat_val, lng_val,
-                    start_date, end_date
+                    row.findtext('ORG_NAME'), row.findtext('USE_TRGT'), row.findtext('USE_FEE'),
+                    row.findtext('INQUIRY'), row.findtext('PLAYER'), row.findtext('PROGRAM'),
+                    row.findtext('ETC_DESC'), row.findtext('IS_FREE'), row.findtext('MAIN_IMG'),
+                    hmpg_addr, row.findtext('ORG_LINK'), lat_val, lng_val,
+                    start_date, end_date, rgst_date, row.findtext('TICKET'),
+                    row.findtext('THEMECODE'), row.findtext('PRO_TIME')
                 )
                 
                 cursor.execute(sql, params)
             
             print(f"⌛ {start} ~ {min(end, total_count)}번 데이터 처리 완료...")
 
-        # 3. 종료된 행사 정리
+        # 4. 종료된 행사 정리
         cursor.execute("DELETE FROM seoul_events WHERE end_date < CURDATE()")
         print("🧹 기간이 지난 행사 데이터를 정리했습니다.")
 
@@ -102,7 +117,7 @@ def sync_seoul_culture_data():
         print(f"🚨 크롤링 중 에러 발생: {e}")
     finally:
         conn.close()
-        print("✅ 수집 작업이 종료되었습니다.")
+        print("✅ 모든 데이터 수집 및 정리가 종료되었습니다.")
 
 if __name__ == "__main__":
     sync_seoul_culture_data()

@@ -327,7 +327,48 @@ def get_festivals():
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
+# ✅ 12. 서울시 문화행사 전체 리스트 API
+@app.route('/api/festivals/seoul', methods=['GET'])
+def get_seoul_festivals():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 모든 컬럼 선택 (updated_at 제외 또는 포함 선택 가능)
+            sql = """
+                SELECT 
+                    cult_code, title, codename, guname, date_range, place, 
+                    org_name, use_target, use_fee, inquiry, player, program, 
+                    etc_desc, is_free, main_img, hmpg_url, org_link, lat, lng, 
+                    start_date, end_date, rgstdate, ticket, themecode, pro_time
+                FROM seoul_events
+                WHERE end_date >= CURDATE()
+                ORDER BY start_date ASC
+            """
+            cursor.execute(sql)
+            results = cursor.fetchall()
 
+            # 2. 데이터 가공 (날짜 변환 및 HTML 태그 제거)
+            for row in results:
+                # 텍스트 필드 HTML 클리닝
+                text_fields = ['title', 'place', 'org_name', 'use_target', 'use_fee', 
+                               'inquiry', 'player', 'program', 'etc_desc', 'pro_time']
+                for field in text_fields:
+                    if row.get(field):
+                        row[field] = clean_html(row[field])
+                
+                # 날짜 객체 처리 (JSON 에러 방지)
+                date_fields = ['start_date', 'end_date', 'rgstdate']
+                for d_field in date_fields:
+                    if isinstance(row.get(d_field), (date, datetime)):
+                        row[d_field] = row[d_field].strftime('%Y-%m-%d')
+
+            return jsonify(results)
+            
+    except Exception as e:
+        app.logger.error(f"🚨 서울 문화행사 API 에러: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/api/config/splash', methods=['GET'])
 def get_splash_config():
