@@ -35,15 +35,18 @@ def sync_data():
     conn = get_db_connection()
     BASE_URL = "http://apis.data.go.kr/B551011/KorService2/areaBasedList2"
     #TARGET_CONTENT_TYPES = [12, 14, 15]
+    #TARGET_CONTENT_TYPES = [12]
+    #TARGET_CONTENT_TYPES = [14]
+    TARGET_CONTENT_TYPES = [15]
     #TARGET_CONTENT_TYPES = [25]
-    TARGET_CONTENT_TYPES = [28]
+    #TARGET_CONTENT_TYPES = [28]
 
     try:
         for content_type in TARGET_CONTENT_TYPES:
             print(f"\n🚀 카테고리 {content_type} 수집 시작...")
             # 시작 페이지 설정
-            page = 11 if content_type == 12 else 1
-            
+            #page = 11 if content_type == 12 else 1
+            page = 1
             while True:
                 success_page = False
                 
@@ -96,9 +99,29 @@ def sync_data():
                                     lclsSystm2, lclsSystm3
                                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 ON DUPLICATE KEY UPDATE
-                                    modifiedtime = VALUES(modifiedtime), title = VALUES(title), 
-                                    addr1 = VALUES(addr1), firstimage = VALUES(firstimage),
-                                    mapx = VALUES(mapx), mapy = VALUES(mapy)
+                                    contenttypeid = VALUES(contenttypeid),
+                                    title = VALUES(title),
+                                    addr1 = VALUES(addr1),
+                                    addr2 = VALUES(addr2),
+                                    zipcode = VALUES(zipcode),
+                                    areacode = VALUES(areacode),
+                                    sigungucode = VALUES(sigungucode),
+                                    mapx = VALUES(mapx),
+                                    mapy = VALUES(mapy),
+                                    mlevel = VALUES(mlevel),
+                                    cat1 = VALUES(cat1),
+                                    cat2 = VALUES(cat2),
+                                    cat3 = VALUES(cat3),
+                                    firstimage = VALUES(firstimage),
+                                    firstimage2 = VALUES(firstimage2),
+                                    cpyrhtDivCd = VALUES(cpyrhtDivCd),
+                                    tel = VALUES(tel),
+                                    modifiedtime = VALUES(modifiedtime),
+                                    lDongRegnCd = VALUES(lDongRegnCd),
+                                    lDongSignguCd = VALUES(lDongSignguCd),
+                                    lclsSystm1 = VALUES(lclsSystm1),
+                                    lclsSystm2 = VALUES(lclsSystm2),
+                                    lclsSystm3 = VALUES(lclsSystm3)
                             """
                             for item in items:
                                 # 숫자형 데이터 안전 변환
