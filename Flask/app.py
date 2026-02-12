@@ -54,6 +54,20 @@ def clean_html(text):
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
+def extract_url(html):
+    """HTML 태그에서 실제 URL 주소만 추출하거나, 일반 텍스트에서 URL을 반환"""
+    if not html:
+        return ""
+    # 1. href 속성 안의 URL 추출 시도
+    match = re.search(r'href=["\'](https?://[^"\']+)["\']', html)
+    if match:
+        return match.group(1)
+    # 2. 태그가 없는 순수 URL 형태 검색
+    match = re.search(r'(https?://[^\s<>]+)', html)
+    if match:
+        return match.group(1)
+    return ""
+
 # --- API 경로 시작 ---
 
 # ✅ 1. 검색 및 전체 리스트용 (에러 핸들링 추가)
@@ -293,26 +307,53 @@ def global_search():
     finally:
         conn.close()
 
-# ✅ 7. 장소 상세 API (기존 유지)
 @app.route('/api/spots/<int:contentid>', methods=['GET'])
 def get_spot_detail(contentid):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            # ✅ 요청하신 6개 컬럼 추가 (D.infocenter, D.chkbabycarriage, D.chkpet, D.chkcreditcard, D.usefee, D.expagerange)
             sql_main = """
-                SELECT P.contentid, P.title, P.addr1, P.addr2, P.mapx, P.mapy, P.firstimage, P.tel, C.overview, D.parking, D.restdate, D.usetime, D.chkbabycarriage
-                FROM picnic_spots P LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) LEFT JOIN spot_details D ON CAST(P.contentid AS CHAR) = CAST(D.contentid AS CHAR)
+                SELECT P.contentid, P.title, P.addr1, P.addr2, P.mapx, P.mapy, P.firstimage, P.tel, 
+                       C.overview, C.homepage, 
+                       D.parking, D.restdate, D.usetime, D.infocenter, 
+                       D.chkbabycarriage, D.chkpet, D.chkcreditcard, D.usefee, D.expagerange
+                FROM picnic_spots P 
+                LEFT JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR) 
+                LEFT JOIN spot_details D ON CAST(P.contentid AS CHAR) = CAST(D.contentid AS CHAR)
                 WHERE P.contentid = %s
             """
             cursor.execute(sql_main, (contentid,))
             m = cursor.fetchone()
             if not m: return jsonify({"error": "데이터 없음"}), 404
+
             sql_sub = "SELECT infoname, infotext FROM spot_info WHERE CAST(contentid AS CHAR) = %s ORDER BY serialnum ASC"
             cursor.execute(sql_sub, (str(contentid),))
             sub_info = cursor.fetchall()
+
+            homepage_url = extract_url(m.get('homepage'))
+
             result = {
-                "basic": {"title": clean_html(m.get('title')), "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(), "lat": m.get('mapy'), "lng": m.get('mapx'), "image": m.get('firstimage', ''), "tel": clean_html(m.get('tel', '')), "overview": clean_html(m.get('overview')) or "설명 준비 중"},
-                "facility": {"parking": clean_html(m.get('parking')) or "정보 없음", "restdate": clean_html(m.get('restdate')) or "정보 없음", "usetime": clean_html(m.get('usetime')) or "상시 개방", "wheelchair": clean_html(m.get('chkbabycarriage')) or "확인 필요"},
+                "basic": {
+                    "title": clean_html(m.get('title')),
+                    "address": f"{m.get('addr1', '')} {m.get('addr2', '')}".strip(),
+                    "lat": m.get('mapy'),
+                    "lng": m.get('mapx'),
+                    "image": m.get('firstimage', ''),
+                    "tel": clean_html(m.get('tel', '') or m.get('infocenter', '')), # tel이 없으면 문의처 정보 사용
+                    "overview": clean_html(m.get('overview')) or "설명 준비 중",
+                    "homepage": homepage_url
+                },
+                "facility": {
+                    "parking": clean_html(m.get('parking')) or "정보 없음",
+                    "restdate": clean_html(m.get('restdate')) or "정보 없음",
+                    "usetime": clean_html(m.get('usetime')) or "상시 개방",
+                    "baby_carriage": clean_html(m.get('chkbabycarriage')) or "확인 필요", # 유모차 대여
+                    "pet": clean_html(m.get('chkpet')) or "정보 없음", # 반려동물 동반 가능여부
+                    "credit_card": clean_html(m.get('chkcreditcard')) or "정보 없음", # 신용카드 사용여부
+                    "fee": clean_html(m.get('usefee')) or "무료 또는 정보 없음", # 이용요금
+                    "age_range": clean_html(m.get('expagerange')) or "전연령 가능" # 체험 가능 연령
+                },
                 "extra_details": [{"infoname": i['infoname'], "infotext": clean_html(i['infotext'])} for i in sub_info]
             }
             return jsonify(result)
