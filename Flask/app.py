@@ -54,19 +54,6 @@ def clean_html(text):
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
-def extract_url(html):
-    """HTML 태그에서 실제 URL 주소만 추출하거나, 일반 텍스트에서 URL을 반환"""
-    if not html:
-        return ""
-    # 1. href 속성 안의 URL 추출 시도
-    match = re.search(r'href=["\'](https?://[^"\']+)["\']', html)
-    if match:
-        return match.group(1)
-    # 2. 태그가 없는 순수 URL 형태 검색
-    match = re.search(r'(https?://[^\s<>]+)', html)
-    if match:
-        return match.group(1)
-    return ""
 
 # --- API 경로 시작 ---
 
@@ -312,10 +299,10 @@ def get_spot_detail(contentid):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            # ✅ 요청하신 6개 컬럼 추가 (D.infocenter, D.chkbabycarriage, D.chkpet, D.chkcreditcard, D.usefee, D.expagerange)
+            # ✅ C.homepage 대신 C.homepage_url을 조회하도록 변경
             sql_main = """
                 SELECT P.contentid, P.title, P.addr1, P.addr2, P.mapx, P.mapy, P.firstimage, P.tel, 
-                       C.overview, C.homepage, 
+                       C.overview, C.homepage_url, 
                        D.parking, D.restdate, D.usetime, D.infocenter, 
                        D.chkbabycarriage, D.chkpet, D.chkcreditcard, D.usefee, D.expagerange
                 FROM picnic_spots P 
@@ -327,11 +314,10 @@ def get_spot_detail(contentid):
             m = cursor.fetchone()
             if not m: return jsonify({"error": "데이터 없음"}), 404
 
+            # 추가 정보(spot_info) 조회
             sql_sub = "SELECT infoname, infotext FROM spot_info WHERE CAST(contentid AS CHAR) = %s ORDER BY serialnum ASC"
             cursor.execute(sql_sub, (str(contentid),))
             sub_info = cursor.fetchall()
-
-            homepage_url = extract_url(m.get('homepage'))
 
             result = {
                 "basic": {
@@ -340,19 +326,20 @@ def get_spot_detail(contentid):
                     "lat": m.get('mapy'),
                     "lng": m.get('mapx'),
                     "image": m.get('firstimage', ''),
-                    "tel": clean_html(m.get('tel', '') or m.get('infocenter', '')), # tel이 없으면 문의처 정보 사용
+                    "tel": clean_html(m.get('tel', '') or m.get('infocenter', '')),
                     "overview": clean_html(m.get('overview')) or "설명 준비 중",
-                    "homepage": homepage_url
+                    # ✅ 정제된 컬럼값을 그대로 사용 (extract_url 호출 불필요)
+                    "homepage": m.get('homepage_url') or ""
                 },
                 "facility": {
                     "parking": clean_html(m.get('parking')) or "정보 없음",
                     "restdate": clean_html(m.get('restdate')) or "정보 없음",
                     "usetime": clean_html(m.get('usetime')) or "상시 개방",
-                    "baby_carriage": clean_html(m.get('chkbabycarriage')) or "확인 필요", # 유모차 대여
-                    "pet": clean_html(m.get('chkpet')) or "정보 없음", # 반려동물 동반 가능여부
-                    "credit_card": clean_html(m.get('chkcreditcard')) or "정보 없음", # 신용카드 사용여부
-                    "fee": clean_html(m.get('usefee')) or "무료 또는 정보 없음", # 이용요금
-                    "age_range": clean_html(m.get('expagerange')) or "전연령 가능" # 체험 가능 연령
+                    "baby_carriage": clean_html(m.get('chkbabycarriage')) or "확인 필요",
+                    "pet": clean_html(m.get('chkpet')) or "정보 없음",
+                    "credit_card": clean_html(m.get('chkcreditcard')) or "정보 없음",
+                    "fee": clean_html(m.get('usefee')) or "무료 또는 정보 없음",
+                    "age_range": clean_html(m.get('expagerange')) or "전연령 가능"
                 },
                 "extra_details": [{"infoname": i['infoname'], "infotext": clean_html(i['infotext'])} for i in sub_info]
             }
