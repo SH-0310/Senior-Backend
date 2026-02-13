@@ -33,5 +33,9 @@ echo "7. 공휴일 정보 업데이트 시작..." >> daily_process.log
 echo "🔮 [전수조사] 지역 분류 및 매핑 시작..." >> daily_process.log
 /usr/bin/python3 classifier.py >> classifier.log 2>&1
 
+# 4. 분류 완료 후 spot_rank_tags 동기화
+echo "🔄 spot_rank_tags 동기화 시작..." >> daily_process.log
+/usr/bin/python3 update_spot_rank_tags.py >> update_spot_rank_tags.log 2>&1
+
 echo "✅ 전체 통합 작업 완료: $(date)" >> daily_process.log
 echo "======================================" >> daily_process.log

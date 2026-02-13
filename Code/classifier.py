@@ -19,6 +19,9 @@ LOCATION_MAP = {
         "강화": ["강화", "석모도", "교동도"]
     },
     "경기도": {
+        "의정부": ["의정부", "부대찌개거리"],
+        "양평": ["양평", "두물머리", "세미원", "용문사"],
+        "남양주": ["남양주", "다산생가", "물의정원"],
         "파주": ["파주", "마장호수", "임진각", "헤이리", "도라산", "통일촌", "제3땅굴", "DMZ", "판문점", "임진각"],
         "양주": ["양주", "나리농원"],
         "가평": ["가평", "어비계곡", "아침고요", "쁘띠프랑스", "스위스마을"],
@@ -113,6 +116,203 @@ LOCATION_MAP = {
         "제주": ["제주", "성산일출봉", "우도", "에코랜드"]
     }
 }
+
+# ===============================
+# spot_rank_tags 파이프라인 추가
+# ===============================
+def sync_spot_rank_tags():
+    """picnic_spots 기준으로 spot_rank_tags contentid 동기화"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT IGNORE INTO spot_rank_tags (contentid)
+                SELECT contentid FROM picnic_spots
+            """)
+            logging.info(f"spot_rank_tags 신규 {cursor.rowcount}건 추가")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_spot_rank_flags():
+    """
+    detailIntro2(spot_details) 기반 편의 플래그 업데이트
+    ✅ 현재 DB는 utf8mb4_unicode_ci로 통일되어 있으므로 별도 COLLATE 없이 JOIN
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE spot_rank_tags t
+                LEFT JOIN spot_details d
+                  ON d.contentid = t.contentid
+                SET
+                  t.babycarriage_ok = CASE
+                    WHEN IFNULL(d.chkbabycarriage,'') REGEXP '가능|가능함|Y|예|있음' THEN 1 ELSE 0 END,
+                  t.has_parking = CASE
+                    WHEN IFNULL(d.parking,'') REGEXP '있음|가능|주차' THEN 1 ELSE 0 END,
+                  t.pet_ok = CASE
+                    WHEN IFNULL(d.chkpet,'') REGEXP '가능|가능함|Y|예' THEN 1 ELSE 0 END,
+                  t.card_ok = CASE
+                    WHEN IFNULL(d.chkcreditcard,'') REGEXP '가능|가능함|Y|예' THEN 1 ELSE 0 END,
+                  t.has_usetime = IF(IFNULL(d.usetime,'')='', 0, 1),
+                  t.has_restdate = IF(IFNULL(d.restdate,'')='', 0, 1),
+                  t.has_infocenter = IF(IFNULL(d.infocenter,'')='', 0, 1)
+            """)
+        conn.commit()
+        logging.info("spot_rank_tags 편의 플래그 업데이트 완료")
+    finally:
+        conn.close()
+
+
+def update_spot_rank_scores():
+    """
+    rule_v5: spot_info(infotext) 통합 검색 반영 및 4개 그룹 점수 최적화
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SET SESSION group_concat_max_len = 1048576;")
+            cursor.execute("""
+                UPDATE spot_rank_tags t
+                JOIN picnic_spots p ON p.contentid = t.contentid
+                LEFT JOIN spot_commons c ON c.contentid = t.contentid
+                -- ✅ spot_info 데이터를 하나로 합쳐 JOIN (1:N 해결)
+                LEFT JOIN (
+                    SELECT contentid, 
+                           GROUP_CONCAT(infotext SEPARATOR ' ') as combined_info
+                    FROM spot_info
+                    GROUP BY contentid
+                ) i ON i.contentid = t.contentid
+                SET
+                  t.tagged_at = NOW(),
+                  t.version = 'rule_v5',
+
+                  -- 1️⃣ 유아동반(toddler): 유모차/주차/편의시설/통합 키워드
+                  t.score_toddler = LEAST(100,
+                    (CASE p.contenttypeid
+                      WHEN '15' THEN 10 WHEN '14' THEN 9 WHEN '12' THEN 8 ELSE 3 END)
+                    + (COALESCE(t.babycarriage_ok,0) * 25)
+                    + (COALESCE(t.has_parking,0) * 10)
+                    + (COALESCE(t.has_usetime,0) * 2)
+                    + (COALESCE(t.has_infocenter,0) * 2)
+                    + (CASE WHEN (IFNULL(c.title,'') REGEXP '키즈|어린이|유아|놀이|체험|아쿠아|동물|목장|농장|테마파크'
+                               OR IFNULL(c.overview,'') REGEXP '키즈|어린이|유아|놀이|체험|아쿠아|동물|목장|농장|테마파크'
+                               OR IFNULL(i.combined_info,'') REGEXP '키즈|어린이|유아|놀이|체험|아쿠아|동물|목장|농장|테마파크|수유실|기저귀|대여')
+                            THEN 20 ELSE 0 END)
+                    + (CASE WHEN (IFNULL(c.title,'') REGEXP '실내|체험관|박물관|미술관|전시관|과학관'
+                               OR IFNULL(c.overview,'') REGEXP '실내|체험관|박물관|미술관|전시관|과학관'
+                               OR IFNULL(i.combined_info,'') REGEXP '실내|전시실|교육|수업')
+                            THEN 10 ELSE 0 END)
+                  ),
+
+                  -- 2️⃣ 초등동반(elementary): 체험/교육/자연/액티비티
+                  t.score_elementary = LEAST(100,
+                    (CASE p.contenttypeid
+                      WHEN '15' THEN 12 WHEN '14' THEN 15 WHEN '28' THEN 18 WHEN '12' THEN 10 ELSE 3 END)
+                    + (COALESCE(t.has_parking,0) * 8)
+                    + (COALESCE(t.babycarriage_ok,0) * 4)
+                    + (CASE WHEN (IFNULL(c.title,'') REGEXP '과학관|초등|천문|박물관|역사|체험|만들기|수목원|동물|아쿠아'
+                               OR IFNULL(c.overview,'') REGEXP '과학관|초등|천문|박물관|역사|체험|만들기|수목원|동물|아쿠아'
+                               OR IFNULL(i.combined_info,'') REGEXP '과학관|초등|천문|박물관|역사|체험|만들기|수목원|동물|아쿠아|교육|해설|도슨트|만들기|수업')
+                            THEN 18 ELSE 0 END)
+                    + (CASE WHEN (IFNULL(c.title,'') REGEXP '공원|호수|숲|산책|해변|바다'
+                               OR IFNULL(c.overview,'') REGEXP '공원|호수|숲|산책|해변|바다')
+                            THEN 12 ELSE 0 END)
+                    - (CASE WHEN IFNULL(c.title,'') REGEXP '둘레길|등산|트레킹|경기옛길' THEN 15 ELSE 0 END)
+                  ),
+
+                  -- 3️⃣ 청소년(teen): 포토/감성/야경/액티비티
+                  t.score_teen = LEAST(100,
+                    -- [1] 기본 점수: 카테고리별 격차를 최소화 (키워드로 승부하게 함)
+                    (CASE p.contenttypeid
+                    WHEN '28' THEN 10 -- 레포츠
+                    WHEN '38' THEN 10 -- 쇼핑/번화가
+                    WHEN '12' THEN 8  -- 관광지
+                    WHEN '14' THEN 7  -- 문화시설
+                    WHEN '15' THEN 8  -- 축제
+                    ELSE 3 END)
+                    
+                    -- [2] 비주얼 & 감성 가점: 12, 14번이 28번을 추월할 수 있는 핵심 동력
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '인생샷|포토존|사진찍기|인스타그램|야경|불빛|루프탑|핫플|카페거리|벽화마을|감성|뷰|전망대'
+                    OR IFNULL(c.overview,'') REGEXP '인생샷|포토존|사진찍기|인스타그램|야경|불빛|루프탑|핫플|카페거리|벽화마을|감성|뷰|전망대'
+                    OR IFNULL(i.combined_info,'') REGEXP '인생샷|포토존|사진찍기|인스타그램|야경|불빛|루프탑|핫플|카페거리|벽화마을|감성|뷰|전망대'
+                    ) THEN 40 ELSE 0 END) -- 가점을 40점으로 대폭 상향
+                    
+                    -- [3] 액티비티 가점: 실제 즐길거리가 있는 경우 (중복 방지를 위해 키워드 정교화)
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '짚라인|루지|레일바이크|카약|서핑|패러글라이딩|액티비티|테마파크|놀이동산|체험|서바이벌'
+                    OR IFNULL(c.overview,'') REGEXP '짚라인|루지|레일바이크|카약|서핑|패러글라이딩|액티비티|테마파크|놀이동산|체험|서바이벌'
+                    ) THEN 35 ELSE 0 END)
+                    
+                    -- [4] 트렌드 가점: 청소년/중학생/고등학생 직접 언급 시 추가 보너스
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '청소년|중학생|고등학생|학생'
+                    OR IFNULL(c.overview,'') REGEXP '청소년|중학생|고등학생|학생'
+                    ) THEN 10 ELSE 0 END)
+
+                    - (CASE WHEN IFNULL(c.title,'') REGEXP '둘레길|산책길|산책로|등산|트레킹|해파랑길|경기옛길|모실길' 
+                    THEN 25 ELSE 0 END)
+                ),
+
+                  -- 4️⃣ 혼자여행(solo): 산책/전시/조용한 여행
+                  -- 4️⃣ 혼자여행(solo): 사색/전시/풍경/조용한 여행 최적화
+                t.score_solo = LEAST(100,
+                    -- [1] 기본 점수 (카테고리 간 격차 최소화)
+                    (CASE p.contenttypeid
+                    WHEN '12' THEN 10 -- 관광지
+                    WHEN '14' THEN 10 -- 문화시설
+                    WHEN '25' THEN 8  -- 여행코스
+                    WHEN '38' THEN 7  -- 쇼핑/거리
+                    ELSE 4 END)
+                    
+                    -- [2] 자연 & 사색 가점 (둘레길, 호수 등 혼자 걷기 좋은 곳)
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '산책|둘레길|트레킹|길|공원|정원|호수|숲|풍경|사색|혼자|조용한|명소'
+                    OR IFNULL(c.overview,'') REGEXP '산책|둘레길|트레킹|길|공원|정원|호수|숲|풍경|사색|혼자|조용한|명소'
+                    OR IFNULL(i.combined_info,'') REGEXP '산책|둘레길|트레킹|길|공원|정원|호수|숲|풍경|사색|혼자|조용한|명소'
+                    ) THEN 40 ELSE 0 END) -- 가점을 40점으로 상향하여 변별력 확보
+                    
+                    -- [3] 문화 & 예술 가점 (박물관, 미술관 등 혼자 관람하기 좋은 곳)
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '박물관|미술관|전시|갤러리|역사|문화|한옥|서점|북카페'
+                    OR IFNULL(c.overview,'') REGEXP '박물관|미술관|전시|갤러리|역사|문화|한옥|서점|북카페'
+                    ) THEN 30 ELSE 0 END)
+
+                    -- [4] 비주얼 가점 (혼자서도 가기 좋은 전망/야경 명소)
+                    + (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '전망|야경|뷰|감성|포토존'
+                    OR IFNULL(c.overview,'') REGEXP '전망|야경|뷰|감성|포토존'
+                    ) THEN 15 ELSE 0 END)
+
+                    -- ✅ [5] 혼자 가기 어색하거나 시끄러운 장소 페널티 (감점)
+                    - (CASE WHEN (
+                        IFNULL(c.title,'') REGEXP '테마파크|워터파크|놀이동산|캠핑장|키즈'
+                    OR p.contenttypeid = '15' -- 축제는 혼자 가기 난이도가 높으므로 감점
+                    ) THEN 20 ELSE 0 END)
+                )
+
+                WHERE p.contenttypeid <> '39'
+            """)
+        conn.commit()
+        logging.info("🚀 spot_rank_tags v5 통합 업데이트 완료 (infotext 반영)")
+    except Exception as e:
+        logging.error(f"❌ 점수 업데이트 실패: {e}")
+    finally:
+        conn.close()
+
+
+
+def run_spot_rank_pipeline():
+    logging.info("🚀 spot_rank_tags 파이프라인 시작")
+    sync_spot_rank_tags()
+    update_spot_rank_flags()
+    update_spot_rank_scores()
+    logging.info("✅ spot_rank_tags 파이프라인 완료")
+
+
 
 def send_telegram_msg(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -289,4 +489,14 @@ def run_full_refinement():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    run_full_refinement()
+
+    try:
+        run_full_refinement()
+    except Exception as e:
+        logging.exception("❌ run_full_refinement 실패 (그래도 spot_rank는 계속 진행)")
+
+    try:
+        run_spot_rank_pipeline()
+    except Exception as e:
+        logging.exception("❌ run_spot_rank_pipeline 실패")
+
