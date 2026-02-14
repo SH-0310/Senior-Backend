@@ -299,17 +299,7 @@ def get_nearby_spots():
             r["overview"] = clean_html(r.get("overview"))
             r["distance"] = round(float(r["distance"]), 1)
 
-        return jsonify({
-            "meta": {
-                "audience": audience,
-                "ampm": ampm,
-                "min_radius": min_dist,
-                "max_radius": max_dist,
-                "weather_state": w_state,
-                "grid_id": grid_id
-            },
-            "items": rows
-        })
+        return jsonify(rows) 
 
     except Exception as e:
         app.logger.exception("nearby spots error")
