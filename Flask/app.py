@@ -167,68 +167,156 @@ def get_promotions():
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: conn.close()
 
-# ✅ 내 주변 소풍지 API (페이지네이션 유지 + 일일 고정 랜덤 추가)
+
+
+
 @app.route('/api/spots/nearby', methods=['GET'])
 def get_nearby_spots():
     lat = request.args.get('lat', default=37.5665, type=float)
     lng = request.args.get('lng', default=126.9780, type=float)
+
+    # ✅ 구간 필터 (필수)
+    min_dist = request.args.get('min_radius', default=0.0, type=float)
     max_dist = request.args.get('max_radius', default=10.0, type=float)
+
+    # ✅ 4개만 허용
     audience = request.args.get('audience', default='solo', type=str)
-    ampm = request.args.get('ampm', default='PM', type=str)   
+    ampm = request.args.get('ampm', default='PM', type=str)
 
     limit = int(request.args.get('limit', 20))
     offset = int(request.args.get('offset', 0))
     seed = datetime.now().strftime('%Y%m%d')
 
     score_col = {
-    "toddler": "T.score_toddler",
-    "elementary": "T.score_elementary",
-    "teen": "T.score_teen",
-    "solo": "T.score_solo",
-    }.get(audience, "T.score_solo")
+        "toddler": "COALESCE(T.score_toddler, 0)",
+        "elementary": "COALESCE(T.score_elementary, 0)",
+        "teen": "COALESCE(T.score_teen, 0)",
+        "solo": "COALESCE(T.score_solo, 0)",
+    }.get(audience, "COALESCE(T.score_solo, 0)")
 
     conn = get_db_connection()
     try:
-        # 1) nearest grid -> 2) weather row -> 3) state
+        # 1) nearest grid -> 2) weather -> 3) state
         grid_id = find_nearest_grid_id(conn, lat, lng)
         w = get_today_weather_for_grid(conn, grid_id, ampm=ampm) if grid_id else None
-        w_state = classify_weather(w)
+        w_state = classify_weather(w)  # 예: "good" / "bad" / "rain" / "snow" 등
 
+        # ✅ SQL에서 bonus를 계산할 수 있도록 weather_state를 문자열로 넘김
+        # (MySQL CASE에서 문자열 비교)
         with conn.cursor() as cursor:
             sql = f"""
-                SELECT P.*, C.overview,
-                       T.indoor_outdoor,
-                       {score_col} AS base_score,
-                       (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s))
-                            + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance
+                SELECT
+                    P.contentid, P.contenttypeid, P.title, P.addr1, P.addr2, P.mapx, P.mapy,
+                    P.firstimage, P.firstimage2, P.tel,
+                    C.overview,
+                    COALESCE(T.indoor_outdoor, 'unknown') AS indoor_outdoor,
+
+                    {score_col} AS base_score,
+
+                    (6371 * acos(
+                        cos(radians(%s)) * cos(radians(P.mapy)) *
+                        cos(radians(P.mapx) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(P.mapy))
+                    )) AS distance,
+
+                    -- ✅ 날씨 보너스 (SQL에서 계산)
+                    (
+                      CASE
+                        -- 날씨가 나쁠수록 실내를 우대, 실외는 감점
+                        WHEN %s IN ('rain','snow','bad') THEN
+                          CASE
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('indoor') THEN 15
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('mixed') THEN 5
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('outdoor') THEN -20
+                            ELSE 0
+                          END
+
+                        -- 날씨가 좋으면 실외 우대
+                        WHEN %s IN ('good','sunny') THEN
+                          CASE
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('outdoor') THEN 10
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('mixed') THEN 5
+                            ELSE 0
+                          END
+
+                        ELSE 0
+                      END
+                    ) AS weather_bonus,
+
+                    -- ✅ 최종점수
+                    (
+                      {score_col} +
+                      CASE
+                        WHEN %s IN ('rain','snow','bad') THEN
+                          CASE
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('indoor') THEN 15
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('mixed') THEN 5
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('outdoor') THEN -20
+                            ELSE 0
+                          END
+                        WHEN %s IN ('good','sunny') THEN
+                          CASE
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('outdoor') THEN 10
+                            WHEN COALESCE(T.indoor_outdoor,'unknown') IN ('mixed') THEN 5
+                            ELSE 0
+                          END
+                        ELSE 0
+                      END
+                    ) AS final_score,
+
+                    -- ✅ 일일 고정 랜덤 키
+                    CRC32(CONCAT(%s, '-', P.contentid)) AS daily_rand
+
                 FROM picnic_spots P
                 JOIN spot_commons C ON P.contentid = C.contentid
                 LEFT JOIN spot_rank_tags T ON T.contentid = P.contentid
+
                 WHERE P.firstimage IS NOT NULL AND P.firstimage != ''
                   AND C.overview IS NOT NULL AND C.overview != ''
-                HAVING distance <= %s
+
+                HAVING distance > %s AND distance <= %s
+
+                ORDER BY
+                  final_score DESC,
+                  distance ASC,
+                  daily_rand ASC
+
+                LIMIT %s OFFSET %s
             """
-            cursor.execute(sql, (lat, lng, lat, max_dist))
+
+            cursor.execute(sql, (
+                lat, lng, lat,
+                w_state, w_state,
+                w_state, w_state,
+                seed,
+                min_dist, max_dist,
+                limit, offset
+            ))
             rows = cursor.fetchall()
 
-        # Flask에서 final_score 계산
+        # ✅ 후처리(HTML 제거/거리 반올림)
         for r in rows:
-            base = int(r.get("base_score") or 0)
-            bonus = weather_bonus(r.get("indoor_outdoor"), w_state)
-            r["final_score"] = base + bonus
-            r["weather_state"] = w_state
-            r["distance"] = round(float(r["distance"]), 1)
             r["overview"] = clean_html(r.get("overview"))
+            r["distance"] = round(float(r["distance"]), 1)
 
-        # 정렬: 점수 우선 + 가까운 곳 + 같은 점수 내 daily-rand
-        rows.sort(key=lambda x: (-x["final_score"], x["distance"], hash(f"{seed}-{x['contentid']}")))
-
-        return jsonify(rows[offset:offset+limit])
+        return jsonify({
+            "meta": {
+                "audience": audience,
+                "ampm": ampm,
+                "min_radius": min_dist,
+                "max_radius": max_dist,
+                "weather_state": w_state,
+                "grid_id": grid_id
+            },
+            "items": rows
+        })
 
     except Exception as e:
+        app.logger.exception("nearby spots error")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
 
 
 # ✅ 6. 통합 검색 API (띄어쓰기 무시 및 중복 보충형)
