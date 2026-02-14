@@ -175,17 +175,17 @@ def get_nearby_spots():
     max_dist = request.args.get('max_radius', default=10.0, type=float)
     audience = request.args.get('audience', default='solo', type=str)
     ampm = request.args.get('ampm', default='PM', type=str)   
-    
+
     limit = int(request.args.get('limit', 20))
     offset = int(request.args.get('offset', 0))
     seed = datetime.now().strftime('%Y%m%d')
 
     score_col = {
-    "toddler": "t.score_toddler",
-    "elementary": "t.score_elementary",
-    "teen": "t.score_teen",
-    "solo": "t.score_solo",
-    }.get(audience, "t.score_solo")
+    "toddler": "T.score_toddler",
+    "elementary": "T.score_elementary",
+    "teen": "T.score_teen",
+    "solo": "T.score_solo",
+    }.get(audience, "T.score_solo")
 
     conn = get_db_connection()
     try:
