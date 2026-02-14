@@ -23,14 +23,37 @@ def sync_all_info_master():
     current_key_idx = 0
     BASE_URL = "http://apis.data.go.kr/B551011/KorService2/detailInfo2"
     
-    # ✅ 배치 사이즈 조절 (원하시는 만큼 숫자를 키우세요)
     BATCH_SIZE = 2000 
 
     while True:
         conn = get_db_connection()
         try:
             with conn.cursor() as cursor:
-                # ✅ 대량 수집을 위한 쿼리
+                # 1. 현재 보유 중인 '장소' 개수 (중복 제거)
+                cursor.execute("SELECT COUNT(DISTINCT contentid) as cnt FROM spot_info")
+                current_owned_spots = cursor.fetchone()['cnt']
+                
+                # 2. 현재 테이블에 쌓인 전체 '행(Row)' 개수
+                cursor.execute("SELECT COUNT(*) as row_cnt FROM spot_info")
+                current_rows = cursor.fetchone()['row_cnt']
+
+                # 3. 수집해야 할 잔여 장소 수량
+                sql_pending_count = """
+                    SELECT COUNT(*) as cnt FROM spot_commons
+                    WHERE contenttypeid IN (12, 14, 15, 25, 28)
+                    AND contentid NOT IN (SELECT DISTINCT contentid FROM spot_info)
+                """
+                cursor.execute(sql_pending_count)
+                total_pending = cursor.fetchone()['cnt']
+
+                # 4. 전체 목표 장소 수 (보유 장소 + 잔여 장소)
+                total_goal = current_owned_spots + total_pending
+
+                if total_pending == 0:
+                    print(f"\n✨ [완료] 모든 장소 수집 완료! (총 {current_owned_spots}개 장소, {current_rows}개 행 보유)")
+                    break
+
+                # ✅ 5. 실제 수집할 대상(targets) 가져오기 (이 부분이 누락되면 에러납니다)
                 sql_targets = f"""
                     SELECT contentid, contenttypeid FROM spot_commons
                     WHERE contenttypeid IN (12, 14, 15, 25, 28)
@@ -39,24 +62,21 @@ def sync_all_info_master():
                 """
                 cursor.execute(sql_targets)
                 targets = cursor.fetchall()
+                total_targets = len(targets)
 
-            if not targets:
-                print("✨ [완료] 수집할 새로운 데이터가 더 이상 없습니다!")
-                break
-
-            total_targets = len(targets)
-            print(f"\n🚀 {total_targets}건 수집 시작 (현재 API 키 인덱스: {current_key_idx})")
+            print(f"\n📊 [수집 통계] 총 목표: {total_goal}개 장소")
+            print(f"✅ 현재 보유: {current_owned_spots}개 장소 (총 {current_rows}개 데이터 행 저장됨)")
+            print(f"⏳ 남은 수집: {total_pending}개 장소")
+            print(f"🚀 이번 배치({total_targets}개) 수집 시작...")
 
             for index, row in enumerate(targets, 1):
-                # 모든 키 소진 시 종료
                 if current_key_idx >= len(API_ACCOUNTS):
-                    print("\n🚨 [중단] 사용 가능한 모든 API 키를 소진했습니다.")
+                    print("\n🚨 [중단] 모든 API 키 소진.")
                     return
 
                 cid, tid = row['contentid'], row['contenttypeid']
                 item_list = []
 
-                # API 키를 바꿔가며 호출
                 while current_key_idx < len(API_ACCOUNTS):
                     acc = API_ACCOUNTS[current_key_idx]
                     params = {
@@ -67,6 +87,12 @@ def sync_all_info_master():
 
                     try:
                         res = requests.get(BASE_URL, params=params, timeout=20)
+                        
+                        if res.status_code == 429:
+                            print(f"\n🚦 [429] 과부하! 15초 대기...")
+                            time.sleep(15)
+                            continue
+
                         data = res.json()
                         body = data.get('response', {}).get('body', {})
                         items_container = body.get('items', '')
@@ -74,12 +100,8 @@ def sync_all_info_master():
                         if items_container and 'item' in items_container:
                             item_list = items_container['item']
                             if isinstance(item_list, dict): item_list = [item_list]
-                        
-                        # 성공 시(데이터가 없어도 응답은 받은 것이므로) 루프 탈출
                         break 
                     except Exception:
-                        # 타임아웃이나 한도초과 발생 시 키 교체
-                        print(f"\n⚠️ 키 [{acc['MOBILE_APP']}] 문제 발생. 다음 키로 전환...")
                         current_key_idx += 1
                         continue
 
@@ -102,15 +124,17 @@ def sync_all_info_master():
                             ))
                     conn.commit()
 
-                # ✅ 진행률 표시 (10건마다 출력)
+                # ✅ 진행률 실시간 업데이트 (보유 장소 수 기준)
                 if index % 10 == 0 or index == total_targets:
-                    print(f"\r📦 진행도: {index}/{total_targets} ({round(index/total_targets*100, 1)}%)", end="")
+                    realtime_owned = current_owned_spots + index
+                    progress_percent = round((realtime_owned / total_goal) * 100, 1)
+                    print(f"\r📈 실시간 현황: [{progress_percent}%] 장소 {realtime_owned} / {total_goal} (잔여 {total_pending - index}건)", end="")
 
-                time.sleep(0.05) # 간격을 약간 줄여 속도 향상
+                time.sleep(0.1)
 
         finally:
             conn.close()
-            print(f"\n✅ {BATCH_SIZE}개 배치 완료 및 DB 저장 성공. 다음 세션을 시작합니다.")
+            print(f"\n✅ {BATCH_SIZE}개 배치 완료. 다음 배치를 준비합니다.")
 
 if __name__ == "__main__":
     sync_all_info_master()

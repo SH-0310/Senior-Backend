@@ -59,14 +59,46 @@ def sync_details():
 
     try:
         with conn.cursor() as cursor:
-            sql_targets = "SELECT p.contentid, p.contenttypeid FROM picnic_spots p LEFT JOIN spot_details d ON p.contentid = d.contentid WHERE d.contentid IS NULL"
+            # ✅ 1. 현재 보유 중인 상세 정보 개수
+            cursor.execute("SELECT COUNT(*) as cnt FROM spot_details")
+            current_owned = cursor.fetchone()['cnt']
+
+            # ✅ 2. 수집해야 할 잔여 대상 개수 (picnic_spots 기준)
+            sql_pending_count = """
+                SELECT COUNT(*) as cnt 
+                FROM picnic_spots p 
+                LEFT JOIN spot_details d ON p.contentid = d.contentid 
+                WHERE d.contentid IS NULL
+            """
+            cursor.execute(sql_pending_count)
+            total_pending = cursor.fetchone()['cnt']
+
+            # ✅ 3. 전체 목표량 (보유 + 잔여)
+            total_goal = current_owned + total_pending
+
+            if total_pending == 0:
+                print(f"\n✨ [완료] 모든 상세 정보가 이미 수집되었습니다! (총 {total_goal}건)")
+                return
+
+            # ✅ 4. 이번 회차 수집 리스트 조회
+            sql_targets = """
+                SELECT p.contentid, p.contenttypeid 
+                FROM picnic_spots p 
+                LEFT JOIN spot_details d ON p.contentid = d.contentid 
+                WHERE d.contentid IS NULL
+            """
             cursor.execute(sql_targets)
             targets = cursor.fetchall()
+            
+        total_targets = len(targets)
+        print(f"\n📊 [수집 통계] 총 목표: {total_goal}건 | 보유: {current_owned}건 | 잔여: {total_pending}건")
+        print(f"🚀 {total_targets}건의 상세 정보 수집을 시작합니다. (API 키 인덱스: {current_key_idx})")
 
-        total = len(targets)
-        print(f"🚀 총 {total}건의 상세 정보 수집을 시작합니다.")
+        for i, row in enumerate(targets, 1):
+            if current_key_idx >= len(API_ACCOUNTS):
+                print("\n🚨 [중단] 모든 API 키가 소진되었습니다.")
+                break
 
-        for i, row in enumerate(targets):
             cid, tid = row['contentid'], row['contenttypeid']
             item_data = None
             retry_count = 0
@@ -82,11 +114,15 @@ def sync_details():
                 try:
                     response = requests.get(DETAIL_URL, params=params, timeout=30)
                     
-                    # 비정상 응답(XML 에러, 한도 초과 등) 체크
-                    if "<?xml" in response.text or "LIMITED" in response.text or len(response.text) < 150:
-                        print(f"⚠️ 계정 [{acc['MOBILE_APP']}] 이상 감지 (한도초과 의심). 키 교체.")
+                    # 429 과부하 에러 처리 추가
+                    if response.status_code == 429:
+                        print(f"\n🚦 [429] 과부하 감지! 15초 대기...")
+                        time.sleep(15)
+                        continue
+
+                    if "<?xml" in response.text or "LIMITED" in response.text:
+                        print(f"\n🚫 계정 [{acc['MOBILE_APP']}] 한도초과. 키 교체.")
                         current_key_idx += 1
-                        retry_count = 0 # 새 키로 시작하니 카운트 초기화
                         continue
 
                     data = response.json()
@@ -95,25 +131,9 @@ def sync_details():
                         item_data = body['items']['item'][0]
                     break 
 
-                except requests.exceptions.Timeout:
-                    retry_count += 1
-                    if retry_count >= 3:
-                        print(f"⏳ [{acc['MOBILE_APP']}] 3회 타임아웃 발생. 다음 키로 넘어갑니다.")
-                        current_key_idx += 1
-                        retry_count = 0
-                    else:
-                        print(f"⏳ [{acc['MOBILE_APP']}] 응답 지연. 재시도 중... ({retry_count}/3)")
-                        time.sleep(2)
-                    continue 
-
-                except Exception as e:
-                    print(f"⚠️ [{acc['MOBILE_APP']}] 해석 불가/통신 오류: {e}")
+                except Exception:
                     current_key_idx += 1
-                    break 
-
-            if current_key_idx >= len(API_ACCOUNTS):
-                print("🚨 [중단] 모든 API 키가 소진되었습니다.")
-                break
+                    continue 
 
             if item_data:
                 clean = map_standard_fields(item_data)
@@ -133,17 +153,20 @@ def sync_details():
                     """
                     cursor.execute(sql_insert, clean)
                 conn.commit()
-                print(f"✅ [{i+1}/{total}] {cid} 저장 완료")
-            else:
-                print(f"❓ [{i+1}/{total}] {cid} 데이터 없음 (Skip)")
+            
+            # ✅ 실시간 진행률 로그 출력
+            if i % 10 == 0 or i == total_targets:
+                realtime_owned = current_owned + i
+                progress_percent = round((realtime_owned / total_goal) * 100, 1)
+                print(f"\r📈 실시간 현황: [{progress_percent}%] 보유 {realtime_owned} / 총량 {total_goal} (잔여 {total_pending - i}건)", end="")
 
             time.sleep(0.3)
 
     except Exception as e:
-        print(f"❗ 치명적 오류 발생: {e}")
+        print(f"\n❗ 치명적 오류 발생: {e}")
     finally:
         conn.close()
-        print("🏁 수집 프로세스가 종료되었습니다.")
+        print("\n🏁 수집 프로세스가 종료되었습니다.")
 
 if __name__ == "__main__":
     sync_details()

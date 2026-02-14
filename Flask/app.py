@@ -172,46 +172,64 @@ def get_promotions():
 def get_nearby_spots():
     lat = request.args.get('lat', default=37.5665, type=float)
     lng = request.args.get('lng', default=126.9780, type=float)
-    min_dist = request.args.get('min_radius', default=0.0, type=float)
     max_dist = request.args.get('max_radius', default=10.0, type=float)
+    audience = request.args.get('audience', default='solo', type=str)
+    ampm = request.args.get('ampm', default='PM', type=str)   
     
     limit = int(request.args.get('limit', 20))
     offset = int(request.args.get('offset', 0))
-    
-    # ✅ 매일 다른 랜덤 순서를 위해 오늘 날짜를 Seed로 사용 (예: 20260212)
-    # 이렇게 하면 사용자가 페이지를 넘겨도(Offset) 하루 동안은 순서가 유지됩니다.
     seed = datetime.now().strftime('%Y%m%d')
+
+    score_col = {
+    "toddler": "t.score_toddler",
+    "elementary": "t.score_elementary",
+    "teen": "t.score_teen",
+    "solo": "t.score_solo",
+    }.get(audience, "t.score_solo")
 
     conn = get_db_connection()
     try:
+        # 1) nearest grid -> 2) weather row -> 3) state
+        grid_id = find_nearest_grid_id(conn, lat, lng)
+        w = get_today_weather_for_grid(conn, grid_id, ampm=ampm) if grid_id else None
+        w_state = classify_weather(w)
+
         with conn.cursor() as cursor:
-            # ✅ 정렬 로직 설명:
-            # 1. 2km 단위(FLOOR(distance / 2))로 그룹화하여 가까운 곳을 우선순위로 둡니다.
-            # 2. 같은 2km 반경 내에서는 RAND(seed)를 사용하여 매일 다른 순서로 섞어줍니다.
-            sql = """
-                SELECT P.*, C.overview, 
-                       (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s)) + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance 
-                FROM picnic_spots P 
-                JOIN spot_commons C ON CAST(P.contentid AS CHAR) = CAST(C.contentid AS CHAR)
-                WHERE P.firstimage IS NOT NULL AND P.firstimage != '' 
+            sql = f"""
+                SELECT P.*, C.overview,
+                       T.indoor_outdoor,
+                       {score_col} AS base_score,
+                       (6371 * acos(cos(radians(%s)) * cos(radians(P.mapy)) * cos(radians(P.mapx) - radians(%s))
+                            + sin(radians(%s)) * sin(radians(P.mapy)))) AS distance
+                FROM picnic_spots P
+                JOIN spot_commons C ON P.contentid = C.contentid
+                LEFT JOIN spot_rank_tags T ON T.contentid = P.contentid
+                WHERE P.firstimage IS NOT NULL AND P.firstimage != ''
                   AND C.overview IS NOT NULL AND C.overview != ''
-                HAVING distance > %s AND distance <= %s 
-                ORDER BY FLOOR(distance / 2) ASC, RAND(%s) 
-                LIMIT %s OFFSET %s
+                HAVING distance <= %s
             """
-            
-            cursor.execute(sql, [lat, lng, lat, min_dist, max_dist, seed, limit, offset])
-            results = cursor.fetchall()
-            
-            for row in results: 
-                row['overview'] = clean_html(row['overview'])
-                row['distance'] = round(row['distance'], 1) # 거리값 반올림 추가
-                
-            return jsonify(results)
-    except Exception as e: 
+            cursor.execute(sql, (lat, lng, lat, max_dist))
+            rows = cursor.fetchall()
+
+        # Flask에서 final_score 계산
+        for r in rows:
+            base = int(r.get("base_score") or 0)
+            bonus = weather_bonus(r.get("indoor_outdoor"), w_state)
+            r["final_score"] = base + bonus
+            r["weather_state"] = w_state
+            r["distance"] = round(float(r["distance"]), 1)
+            r["overview"] = clean_html(r.get("overview"))
+
+        # 정렬: 점수 우선 + 가까운 곳 + 같은 점수 내 daily-rand
+        rows.sort(key=lambda x: (-x["final_score"], x["distance"], hash(f"{seed}-{x['contentid']}")))
+
+        return jsonify(rows[offset:offset+limit])
+
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
-    finally: 
+    finally:
         conn.close()
+
 
 # ✅ 6. 통합 검색 API (띄어쓰기 무시 및 중복 보충형)
 @app.route('/api/search/global', methods=['GET'])
@@ -544,6 +562,85 @@ def get_all_weather():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+def find_nearest_grid_id(conn, lat, lng):
+    with conn.cursor() as cursor:
+        sql = """
+            SELECT grid_id,
+                   (6371 * acos(
+                      cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) +
+                      sin(radians(%s)) * sin(radians(lat))
+                   )) AS dist_km
+            FROM weather_grids
+            ORDER BY dist_km ASC
+            LIMIT 1
+        """
+        cursor.execute(sql, (lat, lng, lat))
+        row = cursor.fetchone()
+        return row["grid_id"] if row else None
+
+def get_today_weather_for_grid(conn, grid_id, ampm="PM"):
+    target_time = "1500" if ampm == "PM" else "0900"
+
+    with conn.cursor() as cursor:
+        sql = """
+            SELECT fcst_date, fcst_time, sky, pty, pop, tmp
+            FROM weather_grid_forecasts
+            WHERE grid_id = %s
+              AND fcst_date = DATE_FORMAT(NOW(), '%%Y%%m%%d')
+              AND fcst_time = %s
+            ORDER BY collected_at DESC
+            LIMIT 1
+        """
+        cursor.execute(sql, (grid_id, target_time))
+        return cursor.fetchone()
+
+def classify_weather(w):
+    if not w:
+        return "UNKNOWN"
+
+    pty = w.get("pty")
+    pop = w.get("pop") or 0
+    tmp = w.get("tmp")
+
+    # 강수형태: 0 없음 / 1 비 / 2 비+눈 / 3 눈 / 4 소나기 (기상청 기준)
+    if pty and int(pty) != 0:
+        return "BAD"
+
+    if pop is not None and int(pop) >= 60:
+        return "BAD"
+
+    if tmp is not None:
+        t = int(tmp)
+        if t <= -5 or t >= 33:
+            return "EXTREME"
+
+    return "OK"  # 맑음/구름은 OK로 처리(세분화 원하면 GOOD 추가)
+
+
+def weather_bonus(indoor_outdoor, weather_state):
+    table = {
+        # 상태가 OK일 때는 outdoor 약간 가점 (날씨 괜찮으면 야외 추천)
+        ("outdoor", "OK"): +3,
+        ("mixed",  "OK"): +2,
+        ("indoor", "OK"): 0,
+
+        # BAD: 야외 감점, 실내 가점
+        ("outdoor", "BAD"): -10,
+        ("mixed",  "BAD"): -4,
+        ("indoor", "BAD"): +6,
+
+        # EXTREME: 더 강하게
+        ("outdoor", "EXTREME"): -20,
+        ("mixed",  "EXTREME"): -10,
+        ("indoor", "EXTREME"): +8,
+
+        ("unknown", "OK"): 0,
+        ("unknown", "BAD"): 0,
+        ("unknown", "EXTREME"): 0,
+    }
+    return table.get((indoor_outdoor or "unknown", weather_state), 0)
+
 
 # ✅ 헬스 체크
 @app.route('/health', methods=['GET'])
